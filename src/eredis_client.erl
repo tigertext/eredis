@@ -71,7 +71,7 @@ stop(Pid) ->
 init([Host, Port, Database, Password, ReconnectSleep]) ->
     random:seed(erlang:now()),
     Creation_Time = now_for_timestamp_millisecs(),
-    Client_Id = Creation_Time ++ "-" ++ integer_to_list(random:uniform(16)),
+    Client_Id = Creation_Time ++ "-" ++ integer_to_list(random:uniform(9999999999999999)),
 
     State = #state{host = Host,
                    port = Port,
@@ -270,12 +270,23 @@ safe_reply(From, Value) ->
 %% returns something we don't expect, we crash. Returns {ok, State} or
 %% {SomeError, Reason}.
 connect(State) ->
+    Id = State#state.id,
+    case ets:member(eredis_client_stats, Id) of
+        true ->
+            ets:update_counter(eredis_client_stats, Id, 1),
+            ets:update_element(eredis_client_stats, Id, {3, now_for_timestamp_millisecs()});
+        false ->
+            ets:insert(eredis_client_stats, {Id, 1, now_for_timestamp_millisecs(), 0, never})
+    end,
+
     case gen_tcp:connect(State#state.host, State#state.port, ?SOCKET_OPTS) of
         {ok, Socket} ->
             case authenticate(Socket, State#state.password) of
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
+                            ets:update_counter(eredis_client_stats, Id, {4, 1}),
+                            ets:update_element(eredis_client_stats, Id, {5, now_for_timestamp_millisecs()}),
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
                             {error, {select_error, Reason}}
@@ -316,12 +327,7 @@ do_sync_command(Socket, Command) ->
 %% @doc: Loop until a connection can be established, this includes
 %% successfully issuing the auth and select calls. When we have a
 %% connection, give the socket to the redis client.
-reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep, id = Id} = State) ->
-    case ets:member(eredis_client_stats, Id) of
-        true    -> ets:update_counter   (eredis_client_stats, Id, 1);
-        false   -> ets:insert           (eredis_client_stats, {Id, 1})
-    end,
-
+reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
             gen_tcp:controlling_process(Socket, Client),
