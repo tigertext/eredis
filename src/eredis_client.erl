@@ -84,6 +84,7 @@ init([Host, Port, Database, Password, ReconnectSleep]) ->
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
 
+    % ETS table structure: {Id, connection attempts (counter), last connection attempt timestamp (string), successful connections (counter), last successful connection timestamp (string)}
     case ets:info(?STATS_TABLE) of
         undefined   -> try ets:new(?STATS_TABLE, [ordered_set, public, named_table]) catch _:_ -> saved_from_race_condition end;
         _           -> already_started
@@ -275,9 +276,12 @@ connect(State) ->
     Id = State#state.id,
     case ets:member(?STATS_TABLE, Id) of
         true ->
+            % Increase connection attempts counter
             ets:update_counter(?STATS_TABLE, Id, 1),
+            % Update last connection attempt time
             ets:update_element(?STATS_TABLE, Id, {3, now_for_timestamp_millisecs()});
         false ->
+            % First time connecting with client
             ets:insert(?STATS_TABLE, {Id, 1, now_for_timestamp_millisecs(), 0, never})
     end,
 
@@ -287,7 +291,9 @@ connect(State) ->
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
+                            % Increase successful connections counter
                             ets:update_counter(?STATS_TABLE, Id, {4, 1}),
+                            % Update last successful connection time
                             ets:update_element(?STATS_TABLE, Id, {5, now_for_timestamp_millisecs()}),
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
