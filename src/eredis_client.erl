@@ -47,6 +47,8 @@
           queue :: queue() | undefined
 }).
 
+-define(STATS_TABLE, eredis_client_stats).
+
 %%
 %% API
 %%
@@ -82,8 +84,8 @@ init([Host, Port, Database, Password, ReconnectSleep]) ->
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
 
-    case ets:info(eredis_client_stats) of
-        undefined   -> ets:new(eredis_client_stats, [ordered_set, public, named_table]);
+    case ets:info(?STATS_TABLE) of
+        undefined   -> ets:new(?STATS_TABLE, [ordered_set, public, named_table]);
         _           -> ok
     end,
 
@@ -271,12 +273,12 @@ safe_reply(From, Value) ->
 %% {SomeError, Reason}.
 connect(State) ->
     Id = State#state.id,
-    case ets:member(eredis_client_stats, Id) of
+    case ets:member(?STATS_TABLE, Id) of
         true ->
-            ets:update_counter(eredis_client_stats, Id, 1),
-            ets:update_element(eredis_client_stats, Id, {3, now_for_timestamp_millisecs()});
+            ets:update_counter(?STATS_TABLE, Id, 1),
+            ets:update_element(?STATS_TABLE, Id, {3, now_for_timestamp_millisecs()});
         false ->
-            ets:insert(eredis_client_stats, {Id, 1, now_for_timestamp_millisecs(), 0, never})
+            ets:insert(?STATS_TABLE, {Id, 1, now_for_timestamp_millisecs(), 0, never})
     end,
 
     case gen_tcp:connect(State#state.host, State#state.port, ?SOCKET_OPTS) of
@@ -285,8 +287,8 @@ connect(State) ->
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
-                            ets:update_counter(eredis_client_stats, Id, {4, 1}),
-                            ets:update_element(eredis_client_stats, Id, {5, now_for_timestamp_millisecs()}),
+                            ets:update_counter(?STATS_TABLE, Id, {4, 1}),
+                            ets:update_element(?STATS_TABLE, Id, {5, now_for_timestamp_millisecs()}),
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
                             {error, {select_error, Reason}}
