@@ -40,6 +40,7 @@
           password :: binary() | undefined,
           database :: binary() | undefined,
           reconnect_sleep :: reconnect_sleep() | undefined,
+          id :: string(),
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
@@ -68,14 +69,23 @@ stop(Pid) ->
 %%====================================================================
 
 init([Host, Port, Database, Password, ReconnectSleep]) ->
+    random:seed(erlang:now()),
+    Creation_Time = now_for_timestamp_millisecs(),
+    Client_Id = Creation_Time ++ "-" ++ integer_to_list(random:uniform(16)),
+
     State = #state{host = Host,
                    port = Port,
                    database = list_to_binary(integer_to_list(Database)),
                    password = list_to_binary(Password),
                    reconnect_sleep = ReconnectSleep,
-
+                   id = Client_Id,
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
+
+    case ets:info(eredis_client_stats) of
+        undefined   -> ets:new(eredis_client_stats, [ordered_set, public, named_table]);
+        _           -> ok
+    end,
 
     case connect(State) of
         {ok, NewState} ->
@@ -83,6 +93,15 @@ init([Host, Port, Database, Password, ReconnectSleep]) ->
         {error, Reason} ->
             {stop, {connection_error, Reason}}
     end.
+
+now_for_timestamp_millisecs() ->
+    {A, B, C} = os:timestamp(),
+    Milliseconds = C div 1000,
+    Total_Seconds = (A * 1000000 + B),
+    Gregorian_Seconds = 62167219200 + Total_Seconds,
+    {{Year, Month, Day}, {Hour, Minute, Second}} = calendar:gregorian_seconds_to_datetime(Gregorian_Seconds),
+    lists:flatten(io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B.~3.10.0BZ",
+        [Year, Month, Day, Hour, Minute, Second, Milliseconds])).
 
 handle_call({request, Req}, From, State) ->
     do_request(Req, From, State);
@@ -297,7 +316,12 @@ do_sync_command(Socket, Command) ->
 %% @doc: Loop until a connection can be established, this includes
 %% successfully issuing the auth and select calls. When we have a
 %% connection, give the socket to the redis client.
-reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
+reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep, id = Id} = State) ->
+    case ets:member(eredis_client_stats, Id) of
+        true    -> ets:update_counter   (eredis_client_stats, Id, 1);
+        false   -> ets:insert           (eredis_client_stats, {Id, 1})
+    end,
+
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
             gen_tcp:controlling_process(Socket, Client),
