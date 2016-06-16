@@ -73,7 +73,7 @@ stop(Pid) ->
 init([Host, Port, Database, Password, ReconnectSleep]) ->
     random:seed(erlang:now()),
     Creation_Time = now_for_timestamp_millisecs(),
-    Client_Id = Creation_Time ++ "-" ++ integer_to_list(random:uniform(9999999999999999)),
+    Client_Id = pid_to_list(self()) ++ "-" ++ Creation_Time,
 
     State = #state{host = Host,
                    port = Port,
@@ -85,8 +85,8 @@ init([Host, Port, Database, Password, ReconnectSleep]) ->
                    queue = queue:new()},
 
     case ets:info(?STATS_TABLE) of
-        undefined   -> ets:new(?STATS_TABLE, [ordered_set, public, named_table]);
-        _           -> ok
+        undefined   -> try ets:new(?STATS_TABLE, [ordered_set, public, named_table]) catch _:_ -> saved_from_race_condition end;
+        _           -> already_started
     end,
 
     case connect(State) of
