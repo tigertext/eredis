@@ -40,11 +40,14 @@
           password :: binary() | undefined,
           database :: binary() | undefined,
           reconnect_sleep :: reconnect_sleep() | undefined,
+          id :: string(),
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
           queue :: queue() | undefined
 }).
+
+-define(STATS_TABLE, eredis_client_stats).
 
 %%
 %% API
@@ -68,14 +71,24 @@ stop(Pid) ->
 %%====================================================================
 
 init([Host, Port, Database, Password, ReconnectSleep]) ->
+    random:seed(erlang:now()),
+    Creation_Time = now_for_timestamp_millisecs(),
+    Client_Id = pid_to_list(self()) ++ "-" ++ Creation_Time,
+
     State = #state{host = Host,
                    port = Port,
                    database = list_to_binary(integer_to_list(Database)),
                    password = list_to_binary(Password),
                    reconnect_sleep = ReconnectSleep,
-
+                   id = Client_Id,
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
+
+    % ETS table structure: {Id, connection attempts (counter), last connection attempt timestamp (string), successful connections (counter), last successful connection timestamp (string)}
+    case ets:info(?STATS_TABLE) of
+        undefined   -> try ets:new(?STATS_TABLE, [ordered_set, public, named_table]) catch _:_ -> saved_from_race_condition end;
+        _           -> already_started
+    end,
 
     case connect(State) of
         {ok, NewState} ->
@@ -83,6 +96,15 @@ init([Host, Port, Database, Password, ReconnectSleep]) ->
         {error, Reason} ->
             {stop, {connection_error, Reason}}
     end.
+
+now_for_timestamp_millisecs() ->
+    {A, B, C} = os:timestamp(),
+    Milliseconds = C div 1000,
+    Total_Seconds = (A * 1000000 + B),
+    Gregorian_Seconds = 62167219200 + Total_Seconds,
+    {{Year, Month, Day}, {Hour, Minute, Second}} = calendar:gregorian_seconds_to_datetime(Gregorian_Seconds),
+    lists:flatten(io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B.~3.10.0BZ",
+        [Year, Month, Day, Hour, Minute, Second, Milliseconds])).
 
 handle_call({request, Req}, From, State) ->
     do_request(Req, From, State);
@@ -251,12 +273,28 @@ safe_reply(From, Value) ->
 %% returns something we don't expect, we crash. Returns {ok, State} or
 %% {SomeError, Reason}.
 connect(State) ->
+    Id = State#state.id,
+    case ets:member(?STATS_TABLE, Id) of
+        true ->
+            % Increase connection attempts counter
+            ets:update_counter(?STATS_TABLE, Id, 1),
+            % Update last connection attempt time
+            ets:update_element(?STATS_TABLE, Id, {3, now_for_timestamp_millisecs()});
+        false ->
+            % First time connecting with client
+            ets:insert(?STATS_TABLE, {Id, 1, now_for_timestamp_millisecs(), 0, never})
+    end,
+
     case gen_tcp:connect(State#state.host, State#state.port, ?SOCKET_OPTS) of
         {ok, Socket} ->
             case authenticate(Socket, State#state.password) of
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
+                            % Increase successful connections counter
+                            ets:update_counter(?STATS_TABLE, Id, {4, 1}),
+                            % Update last successful connection time
+                            ets:update_element(?STATS_TABLE, Id, {5, now_for_timestamp_millisecs()}),
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
                             {error, {select_error, Reason}}
