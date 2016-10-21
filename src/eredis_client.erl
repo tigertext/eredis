@@ -41,7 +41,7 @@
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
-          queue :: queue() | undefined
+          queue :: queue:queue() | undefined
 }).
 
 %%
