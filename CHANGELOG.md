@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v1.1.0
+
+* Merged a ton of of old and neglected pull requests. Thanks to
+  patient contributors:
+  * Emil Falk
+  * Evgeny Khramtsov
+  * Kevin Wilson
+  * Luis Rascão
+  * Аверьянов Илья (savonarola on github)
+  * ololoru
+  * Giacomo Olgeni
+
+* Removed rebar binary, made everything a bit more rebar3 & mix
+  friendly.
+
+
+## v1.0.8
+
+* Fixed include directive to work with rebar 2.5.1. Thanks to Feng Hao
+  for the patch.
+
+## v1.0.7
+
+* If an eredis_sub_client needs to reconnect to Redis, the controlling
+  process is now notified with the message `{eredis_reconnect_attempt,
+  Pid}`. If the reconnection attempt fails, the message is
+  `{eredis_reconnect_failed, Pid, Reason}`. Thanks to Piotr Nosek for
+  the patch.
+
+* No more deprecation warnings of the `queue` type on OTP 17. Thanks
+  to Daniel Kempkens for the patch.
+
+* Various spec fixes. Thanks to Hernan Rivas Acosta and Anton Kalyaev.
+
 ## v1.0.6
 
 * If the connection to Redis is lost, requests in progress will

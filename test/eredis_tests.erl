@@ -5,6 +5,14 @@
 
 -import(eredis, [create_multibulk/1]).
 
+connect_test() ->
+    ?assertMatch({ok, _}, eredis:start_link("127.0.0.1", 6379)),
+    ?assertMatch({ok, _}, eredis:start_link("localhost", 6379)).
+
+connect_socket_options_test() ->
+    ?assertMatch({ok, _}, eredis:start_link([{socket_options, [{keepalive, true}]}])),
+    ?assertMatch({ok, _}, eredis:start_link("localhost", 6379, 0, "",100, 5000, [{keepalive, true}])).
+
 get_set_test() ->
     C = c(),
     ?assertMatch({ok, _}, eredis:q(C, ["DEL", foo])),
@@ -108,11 +116,23 @@ q_noreply_test() ->
     %% Even though q_noreply doesn't wait, it is sent before subsequent requests:
     ?assertEqual({ok, <<"bar">>}, eredis:q(C, ["GET", foo])).
 
+q_async_test() ->
+    C = c(),
+    ?assertEqual({ok, <<"OK">>}, eredis:q(C, ["SET", foo, bar])),
+    ?assertEqual(ok, eredis:q_async(C, ["GET", foo], self())),
+    receive
+        {response, Msg} ->
+            ?assertEqual(Msg, {ok, <<"bar">>}),
+            ?assertMatch({ok, _}, eredis:q(C, ["DEL", foo]))
+    end.
+
 c() ->
     Res = eredis:start_link(),
     ?assertMatch({ok, _}, Res),
     {ok, C} = Res,
     C.
+
+
 
 c_no_reconnect() ->
     Res = eredis:start_link("127.0.0.1", 6379, 0, "", no_reconnect),
@@ -135,6 +155,25 @@ multibulk_test_() ->
 
 undefined_database_test() ->
     ?assertMatch({ok,_}, eredis:start_link("localhost", 6379, undefined)).
+
+connection_failure_during_start_no_reconnect_test() ->
+    process_flag(trap_exit, true),
+    Res = eredis:start_link("localhost", 6378, 0, "", no_reconnect),
+    ?assertMatch({error, _}, Res),
+    IsDead = receive {'EXIT', _, _} -> died
+             after 1000 -> still_alive end,
+    process_flag(trap_exit, false),
+    ?assertEqual(died, IsDead).
+
+connection_failure_during_start_reconnect_test() ->
+    process_flag(trap_exit, true),
+    Res = eredis:start_link("localhost", 6378, 0, "", 100),
+    ?assertMatch({ok, _}, Res),
+    {ok, ClientPid} = Res,
+    IsDead = receive {'EXIT', ClientPid, _} -> died
+             after 400 -> still_alive end,
+    process_flag(trap_exit, false),
+    ?assertEqual(still_alive, IsDead).
 
 tcp_closed_test() ->
     C = c(),
