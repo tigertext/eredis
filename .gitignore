@@ -1,4 +1,7 @@
 ebin/*
 .eunit
 *~
+.idea/
+.rebar/
+*.iml
 Emakefile
