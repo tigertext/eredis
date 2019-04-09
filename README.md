@@ -23,12 +23,32 @@ copy and paste the following into a shell to try out Eredis:
     {ok, <<"OK">>} = eredis:q(C, ["SET", "foo", "bar"]).
     {ok, <<"bar">>} = eredis:q(C, ["GET", "foo"]).
 
+To connect to a Redis instance listening on a Unix domain socket:
+
+    {ok, C1} = eredis:start_link({local, "/var/run/redis.sock"}, 0).
+
 MSET and MGET:
 
 ```erlang
 KeyValuePairs = ["key1", "value1", "key2", "value2", "key3", "value3"].
 {ok, <<"OK">>} = eredis:q(C, ["MSET" | KeyValuePairs]).
 {ok, Values} = eredis:q(C, ["MGET" | ["key1", "key2", "key3"]]).
+```
+
+HASH
+
+```erlang
+HashObj = ["id", "objectId", "message", "message", "receiver", "receiver", "status", "read"].
+eredis:q(C, ["HMSET", "key" | HashObj]).
+{ok, Values} = eredis:q(C, ["HGETALL", "key"]).
+```
+
+LIST
+
+```erlang
+eredis:q(C, ["LPUSH", "keylist", "value"]).
+eredis:q(C, ["RPUSH", "keylist", "value"]).
+eredis:q(C, ["LRANGE", "keylist",0,-1]).
 ```
 
 Transactions:
@@ -94,15 +114,17 @@ requests, you may use `eredis:qp(Client::pid(),
 where the values are the redis responses in the same order as the
 commands you provided.
 
-To start the client, use any of the `eredis:start_link/0,1,2,3,4,5`
-functions. They all include sensible defaults. `start_link/5` takes
+To start the client, use any of the `eredis:start_link/0,1,2,3,4,5,6,7`
+functions. They all include sensible defaults. `start_link/7` takes
 the following arguments:
 
-* Host, dns name or ip adress as string
+* Host, dns name or ip adress as string; or unix domain socket as {local, Path} (available in OTP 19+)
 * Port, integer, default is 6379
 * Database, integer or 0 for default database
 * Password, string or empty string([]) for no password
 * Reconnect sleep, integer of milliseconds to sleep between reconnect attempts
+* Connect timeout, timeout value in milliseconds to use in `gen_tcp:connect`, default is 5000
+* Socket options, proplist of options to be sent to `gen_tcp:connect`, default is `?SOCKET_OPTS`
 
 ## Reconnecting on Redis down / network failure / timeout / etc
 
@@ -143,6 +165,10 @@ channel.
 eredis also supports Pattern Subscribe using `eredis_sub:psubscribe/2`
 and `eredis_sub:unsubscribe/2`. As with normal subscriptions, a message
 is sent to the controlling process for each channel.
+
+As of v1.0.7 the controlling process will be notified in case of
+reconnection attempts or failures. See `test/eredis_sub_tests` for
+details.
 
 ## AUTH and SELECT
 
