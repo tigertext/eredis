@@ -402,9 +402,9 @@ maybe_reconnect(Reason, #state{queue = Queue} = State) ->
 reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
+            Msgs = get_all_messages([]),
             Client ! {connection_ready, Socket},
             gen_tcp:controlling_process(Socket, Client),
-            Msgs = get_all_messages([]),
             [Client ! M || M <- Msgs];
         {error, _Reason} ->
             timer:sleep(ReconnectSleep),
