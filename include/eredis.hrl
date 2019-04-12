@@ -34,7 +34,7 @@
 -define(NL, "\r\n").
 
 -define(SOCKET_MODE, binary).
--define(SOCKET_OPTS, [{active, once}, {packet, raw}, {reuseaddr, false},
+-define(SOCKET_OPTS, [{active, once}, {packet, raw}, {reuseaddr, true},
         {keepalive, false}, {send_timeout, ?SEND_TIMEOUT}]).
 
 -define(RECV_TIMEOUT, 5000).
