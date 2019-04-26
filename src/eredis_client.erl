@@ -25,26 +25,27 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/7, stop/1, select_database/2]).
+-export([start_link/8, stop/1, select_database/2]).
 
 -export([do_sync_command/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+    terminate/2, code_change/3]).
 
 -record(state, {
-          host :: string() | undefined,
-          port :: integer() | undefined,
-          password :: binary() | undefined,
-          database :: binary() | undefined,
-          reconnect_sleep :: reconnect_sleep() | undefined,
-          connect_timeout :: integer() | undefined,
-          socket_options :: list(),
-
-          socket :: port() | undefined,
-          parser_state :: #pstate{} | undefined,
-          queue :: eredis_queue() | undefined
+    host :: string() | undefined,
+    port :: integer() | undefined,
+    password :: binary() | undefined,
+    database :: binary() | undefined,
+    reconnect_sleep :: reconnect_sleep() | undefined,
+    connect_timeout :: integer() | undefined,
+    socket_options :: list(),
+    sync_start :: boolean(),
+    sync_start_retries = 5 :: pos_integer(),
+    socket :: port() | undefined,
+    parser_state :: #pstate{} | undefined,
+    queue :: eredis_queue() | undefined
 }).
 
 %%
@@ -57,11 +58,12 @@
                  Password::string(),
                  ReconnectSleep::reconnect_sleep(),
                  ConnectTimeout::integer() | undefined,
+                 SyncStart :: boolean ,
                  SocketOptions::list()) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SocketOptions) ->
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout, SocketOptions], []).
+                                    ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions], []).
 
 
 stop(Pid) ->
@@ -71,27 +73,22 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SocketOptions]) ->
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions]) ->
     State = #state{host = Host,
-                   port = Port,
-                   database = read_database(Database),
-                   password = list_to_binary(Password),
-                   reconnect_sleep = ReconnectSleep,
-                   connect_timeout = ConnectTimeout,
-                   socket_options = SocketOptions,
-
-                   parser_state = eredis_parser:init(),
-                   queue = queue:new()},
-
-    case ReconnectSleep of
-        no_reconnect ->
-            case connect(State) of
-                {ok, _NewState} = Res -> Res;
-                {error, Reason} -> {stop, Reason}
-            end;
-        T when is_integer(T) ->
-            self() ! initiate_connection,
-            {ok, State}
+        port = Port,
+        database = read_database(Database),
+        password = list_to_binary(Password),
+        reconnect_sleep = ReconnectSleep,
+        connect_timeout = ConnectTimeout,
+        socket_options = SocketOptions,
+        sync_start = SyncStart,
+        parser_state = eredis_parser:init(),
+        queue = queue:new()},
+    case SyncStart of
+        true ->
+            sync_start(State);
+        _ ->
+            async_start(State)
     end.
 
 handle_call({request, Req}, From, State) ->
@@ -333,17 +330,20 @@ connect(State) ->
 get_addr({local, Path}) ->
     {ok, {local, {local, Path}}};
 get_addr(Hostname) ->
+    %% check for IP address settings.
     case inet:parse_address(Hostname) of
-        {ok, {_,_,_,_} = Addr} ->         {ok, {inet, Addr}};
-        {ok, {_,_,_,_,_,_,_,_} = Addr} -> {ok, {inet6, Addr}};
+        {ok, {_, _, _, _} = Addr} -> {ok, {inet, Addr}};
+        {ok, {_, _, _, _, _, _, _, _} = Addr} -> {ok, {inet6, Addr}};
         {error, einval} ->
-            case inet:getaddr(Hostname, inet6) of
-                 {error, _} ->
-                     case inet:getaddr(Hostname, inet) of
-                         {ok, Addr}-> {ok, {inet, Addr}};
-                         {error, _} = Res -> Res
-                     end;
-                 {ok, Addr} -> {ok, {inet6, Addr}}
+            %% check for hostname settings.
+            %% ipv4 first then ipv6
+            case inet:getaddr(Hostname, inet4) of
+                {error, _} ->
+                    case inet:getaddr(Hostname, inet6) of
+                        {ok, Addr} -> {ok, {inet6, Addr}};
+                        {error, _} = Res -> Res
+                    end;
+                {ok, Addr} -> {ok, {inet4, Addr}}
             end
     end.
 
@@ -402,9 +402,9 @@ maybe_reconnect(Reason, #state{queue = Queue} = State) ->
 reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
+            Msgs = get_all_messages([]),
             Client ! {connection_ready, Socket},
             gen_tcp:controlling_process(Socket, Client),
-            Msgs = get_all_messages([]),
             [Client ! M || M <- Msgs];
         {error, _Reason} ->
             timer:sleep(ReconnectSleep),
@@ -430,3 +430,29 @@ get_all_messages(Acc) ->
     after 0 ->
         lists:reverse(Acc)
     end.
+
+
+sync_start(State) ->
+    handle_sync_connect(State, State#state.sync_start_retries, undefined).
+
+handle_sync_connect(State, 0, Reason) ->
+    {stop, {State, Reason}};
+handle_sync_connect(State, N, _Reason) ->
+    case connect(State) of
+        {ok, NewState} -> {ok, NewState};
+        {error, Reason} ->
+            handle_sync_connect(State, N-1, Reason)
+    end.
+
+async_start(State) ->
+    case State#state.reconnect_sleep of
+        no_reconnect ->
+            case connect(State) of
+                {ok, _NewState} = Res -> Res;
+                {error, Reason} -> {stop, Reason}
+            end;
+        T when is_integer(T) ->
+            self() ! initiate_connection,
+            {ok, State}
+    end.
+
