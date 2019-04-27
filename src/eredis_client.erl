@@ -341,7 +341,10 @@ get_addr(Hostname) ->
                 {error, _} ->
                     case inet:getaddr(Hostname, inet6) of
                         {ok, Addr} -> {ok, {inet6, Addr}};
-                        {error, _} = Res -> Res
+                        {error, _} -> case inet:getaddr(Hostname, inet) of
+                                          {ok, Addr} -> {ok, {inet, Addr}};
+                                          {error, _} = Res -> Res
+                                      end    
                     end;
                 {ok, Addr} -> {ok, {inet4, Addr}}
             end
