@@ -337,14 +337,11 @@ get_addr(Hostname) ->
         {error, einval} ->
             %% check for hostname settings.
             %% ipv4 first then ipv6
-            case inet:getaddr(Hostname, inet4) of
+            case inet:getaddr(Hostname, inet) of
                 {error, _} ->
                     case inet:getaddr(Hostname, inet6) of
                         {ok, Addr} -> {ok, {inet6, Addr}};
-                        {error, _} -> case inet:getaddr(Hostname, inet) of
-                                          {ok, Addr} -> {ok, {inet, Addr}};
-                                          {error, _} = Res -> Res
-                                      end    
+                        {error, _} = Res -> Res
                     end;
                 {ok, Addr} -> {ok, {inet4, Addr}}
             end
