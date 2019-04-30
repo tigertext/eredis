@@ -343,7 +343,7 @@ get_addr(Hostname) ->
                         {ok, Addr} -> {ok, {inet6, Addr}};
                         {error, _} = Res -> Res
                     end;
-                {ok, Addr} -> {ok, {inet4, Addr}}
+                {ok, Addr} -> {ok, {inet, Addr}}
             end
     end.
 
