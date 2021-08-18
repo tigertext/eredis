@@ -55,7 +55,7 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, Socke
 start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions) ->
     start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, false).
 
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsHttps)
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL)
   when is_list(Host) orelse
             (is_tuple(Host) andalso tuple_size(Host) =:= 2 andalso element(1, Host) =:= local),
        is_integer(Port),
@@ -67,7 +67,7 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncS
        is_list(SocketOptions) ->
 
     eredis_client:start_link(Host, Port, Database, Password,
-                             ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsHttps).
+                             ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL).
 
 %% @doc: Callback for starting from poolboy
 -spec start_link(server_args()) -> {ok, Pid::pid()} | {error, Reason::term()}.
