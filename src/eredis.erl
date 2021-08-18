@@ -67,7 +67,7 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncS
        is_list(SocketOptions) ->
 
     eredis_client:start_link(Host, Port, Database, Password,
-                             ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions).
+                             ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsHttps).
 
 %% @doc: Callback for starting from poolboy
 -spec start_link(server_args()) -> {ok, Pid::pid()} | {error, Reason::term()}.

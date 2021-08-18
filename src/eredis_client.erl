@@ -25,9 +25,9 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/9, stop/1, select_database/2]).
+-export([start_link/9, stop/1, select_database/3]).
 
--export([do_sync_command/2]).
+-export([do_sync_command/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
