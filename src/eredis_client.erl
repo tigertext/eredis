@@ -174,7 +174,7 @@ handle_info(initiate_connection, #state{socket = undefined} = State) ->
 
 handle_info(Info, State) ->
     error_logger:info_msg("eredis: recevie unknow message ~p~n", [Info]),
-    {stop, {unhandled_message, _Info}, State}.
+    {stop, {unhandled_message, Info}, State}.
 
 terminate(_Reason, State) ->
     case State#state.socket of
