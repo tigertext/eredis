@@ -131,7 +131,7 @@ handle_cast(_Msg, State) ->
 %% enforce sanity.
 handle_info({Connection, Socket, Bs}, #state{socket = Socket} = State)
     when Connection == tcp; Connection == ssl->
-    ok = inet:setopts(Socket, [{active, once}]),
+    ok = net_setopts(Socket, [{active, once}], Connection == ssl),
     {noreply, handle_response(Bs, State)};
 
 handle_info({Connection, Socket, _}, #state{socket = OurSocket} = State)
@@ -367,13 +367,13 @@ authenticate(Socket, Password, IsSSL) ->
 %% @doc: Executes the given command synchronously, expects Redis to
 %% return "+OK\r\n", otherwise it will fail.
 do_sync_command(Socket, Command, IsSSL) ->
-    ok = inet:setopts(Socket, [{active, false}]),
+    ok = net_setopts(Socket, [{active, false}], IsSSL),
     case send_to_socket(Socket, Command, IsSSL) of
         ok ->
             %% Hope there's nothing else coming down on the socket..
             case recv_from_socket(Socket, 0, ?RECV_TIMEOUT, IsSSL) of
                 {ok, <<"+OK\r\n">>} ->
-                    ok = inet:setopts(Socket, [{active, once}]),
+                    ok = net_setopts(Socket, [{active, once}], IsSSL),
                     ok;
                 Other ->
                     {error, {unexpected_data, Other}}
@@ -485,3 +485,8 @@ close_connection(Socket, false) ->
     gen_tcp:close(Socket);
 close_connection(Socket, true) ->
     ssl:close(Socket).
+
+net_setopts(Socket, Opts, true) ->
+    inet:setopts(Socket, Opts);
+net_setopts(Socket, Opts, false) ->
+    ssl:setopts(Socket, Opts).
