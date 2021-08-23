@@ -486,7 +486,7 @@ close_connection(Socket, false) ->
 close_connection(Socket, true) ->
     ssl:close(Socket).
 
-net_setopts(Socket, Opts, true) ->
-    inet:setopts(Socket, Opts);
 net_setopts(Socket, Opts, false) ->
+    inet:setopts(Socket, Opts);
+net_setopts(Socket, Opts, true) ->
     ssl:setopts(Socket, Opts).
