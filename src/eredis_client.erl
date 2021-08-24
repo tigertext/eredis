@@ -25,9 +25,9 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/8, stop/1, select_database/2]).
+-export([start_link/9, stop/1, select_database/3]).
 
--export([do_sync_command/2]).
+-export([do_sync_command/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -36,6 +36,7 @@
 -record(state, {
     host :: string() | undefined,
     port :: integer() | undefined,
+    is_ssl :: boolean(),
     password :: binary() | undefined,
     database :: binary() | undefined,
     reconnect_sleep :: reconnect_sleep() | undefined,
@@ -58,12 +59,13 @@
                  Password::string(),
                  ReconnectSleep::reconnect_sleep(),
                  ConnectTimeout::integer() | undefined,
-                 SyncStart :: boolean ,
-                 SocketOptions::list()) ->
+                 SyncStart :: boolean(),
+                 SocketOptions::list(),
+                 IsSSL :: boolean()) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions) ->
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions], []).
+                                    ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL], []).
 
 
 stop(Pid) ->
@@ -73,10 +75,11 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions]) ->
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL]) ->
     State = #state{host = Host,
         port = Port,
         database = read_database(Database),
+        is_ssl = IsSSL,
         password = list_to_binary(Password),
         reconnect_sleep = ReconnectSleep,
         connect_timeout = ConnectTimeout,
@@ -126,12 +129,13 @@ handle_cast(_Msg, State) ->
 
 %% Receive data from socket, see handle_response/2. Match `Socket' to
 %% enforce sanity.
-handle_info({tcp, Socket, Bs}, #state{socket = Socket} = State) ->
-    ok = inet:setopts(Socket, [{active, once}]),
+handle_info({Connection, Socket, Bs}, #state{socket = Socket} = State)
+    when Connection == tcp; Connection == ssl->
+    ok = net_setopts(Socket, [{active, once}], Connection == ssl),
     {noreply, handle_response(Bs, State)};
 
-handle_info({tcp, Socket, _}, #state{socket = OurSocket} = State)
-  when OurSocket =/= Socket ->
+handle_info({Connection, Socket, _}, #state{socket = OurSocket} = State)
+  when (Connection == tcp orelse Connection == ssl) andalso OurSocket =/= Socket ->
     %% Ignore tcp messages when the socket in message doesn't match
     %% our state. In order to test behavior around receiving
     %% tcp_closed message with clients waiting in queue, we send a
@@ -139,7 +143,7 @@ handle_info({tcp, Socket, _}, #state{socket = OurSocket} = State)
     %% arrive after that while we are reconnecting.
     {noreply, State};
 
-handle_info({tcp_error, _Socket, _Reason}, State) ->
+handle_info({Error, _Socket, _Reason}, State) when Error == tcp_error; Error == ssl_error->
     %% This will be followed by a close
     {noreply, State};
 
@@ -147,8 +151,8 @@ handle_info({tcp_error, _Socket, _Reason}, State) ->
 %% clients. If desired, spawn of a new process which will try to reconnect and
 %% notify us when Redis is ready. In the meantime, we can respond with
 %% an error message to all our clients.
-handle_info({tcp_closed, _Socket}, State) ->
-    maybe_reconnect(tcp_closed, State);
+handle_info({Closed, _Socket}, State) when Closed == tcp_closed; Closed == ssl_closed->
+    maybe_reconnect(Closed, State);
 
 %% Redis is ready to accept requests, the given Socket is a socket
 %% already connected and authenticated.
@@ -168,13 +172,14 @@ handle_info(initiate_connection, #state{socket = undefined} = State) ->
             maybe_reconnect(Reason, State)
     end;
 
-handle_info(_Info, State) ->
-    {stop, {unhandled_message, _Info}, State}.
+handle_info(Info, State) ->
+    error_logger:info_msg("eredis: recevie unknow message ~p~n", [Info]),
+    {stop, {unhandled_message, Info}, State}.
 
 terminate(_Reason, State) ->
     case State#state.socket of
         undefined -> ok;
-        Socket    -> gen_tcp:close(Socket)
+        Socket    -> close_connection(Socket, State#state.is_ssl)
     end,
     ok.
 
@@ -193,7 +198,7 @@ do_request(_Req, _From, #state{socket = undefined} = State) ->
     {reply, {error, no_connection}, State};
 
 do_request(Req, From, State) ->
-    case gen_tcp:send(State#state.socket, Req) of
+    case send_to_socket(State#state.socket, Req, State#state.is_ssl) of
         ok ->
             NewQueue = queue:in({1, From}, State#state.queue),
             {noreply, State#state{queue = NewQueue}};
@@ -209,7 +214,7 @@ do_pipeline(_Pipeline, _From, #state{socket = undefined} = State) ->
     {reply, {error, no_connection}, State};
 
 do_pipeline(Pipeline, From, State) ->
-    case gen_tcp:send(State#state.socket, Pipeline) of
+    case send_to_socket(State#state.socket, Pipeline, State#state.is_ssl) of
         ok ->
             NewQueue = queue:in({length(Pipeline), From, []}, State#state.queue),
             {noreply, State#state{queue = NewQueue}};
@@ -310,11 +315,11 @@ connect(State) ->
     SocketOptions = lists:ukeymerge(1, lists:keysort(1, State#state.socket_options), lists:keysort(1, ?SOCKET_OPTS)),
     ConnectOptions = [AFamily | [?SOCKET_MODE | SocketOptions]],
 
-    case gen_tcp:connect(Addr, Port, ConnectOptions, State#state.connect_timeout) of
+    case open_connection(Addr, Port, ConnectOptions, State#state.connect_timeout, State#state.is_ssl) of
         {ok, Socket} ->
-            case authenticate(Socket, State#state.password) of
+            case authenticate(Socket, State#state.password, State#state.is_ssl) of
                 ok ->
-                    case select_database(Socket, State#state.database) of
+                    case select_database(Socket, State#state.database, State#state.is_ssl) of
                         ok ->
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
@@ -347,28 +352,28 @@ get_addr(Hostname) ->
             end
     end.
 
-select_database(_Socket, undefined) ->
+select_database(_Socket, undefined, _IsSSL) ->
     ok;
-select_database(_Socket, <<"0">>) ->
+select_database(_Socket, <<"0">>, _IsSSL) ->
     ok;
-select_database(Socket, Database) ->
-    do_sync_command(Socket, ["SELECT", " ", Database, "\r\n"]).
+select_database(Socket, Database, IsSSL) ->
+    do_sync_command(Socket, ["SELECT", " ", Database, "\r\n"], IsSSL).
 
-authenticate(_Socket, <<>>) ->
+authenticate(_Socket, <<>>, _IsSSL) ->
     ok;
-authenticate(Socket, Password) ->
-    do_sync_command(Socket, ["AUTH", " \"", Password, "\"\r\n"]).
+authenticate(Socket, Password, IsSSL) ->
+    do_sync_command(Socket, ["AUTH", " \"", Password, "\"\r\n"], IsSSL).
 
 %% @doc: Executes the given command synchronously, expects Redis to
 %% return "+OK\r\n", otherwise it will fail.
-do_sync_command(Socket, Command) ->
-    ok = inet:setopts(Socket, [{active, false}]),
-    case gen_tcp:send(Socket, Command) of
+do_sync_command(Socket, Command, IsSSL) ->
+    ok = net_setopts(Socket, [{active, false}], IsSSL),
+    case send_to_socket(Socket, Command, IsSSL) of
         ok ->
             %% Hope there's nothing else coming down on the socket..
-            case gen_tcp:recv(Socket, 0, ?RECV_TIMEOUT) of
+            case recv_from_socket(Socket, 0, ?RECV_TIMEOUT, IsSSL) of
                 {ok, <<"+OK\r\n">>} ->
-                    ok = inet:setopts(Socket, [{active, once}]),
+                    ok = net_setopts(Socket, [{active, once}], IsSSL),
                     ok;
                 Other ->
                     {error, {unexpected_data, Other}}
@@ -401,10 +406,10 @@ maybe_reconnect(Reason, #state{queue = Queue} = State) ->
 %% connection, give the socket to the redis client.
 reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
-        {ok, #state{socket = Socket}} ->
+        {ok, #state{socket = Socket, is_ssl = IsSSL}} ->
             Msgs = get_all_messages([]),
             Client ! {connection_ready, Socket},
-            gen_tcp:controlling_process(Socket, Client),
+            controlling_process(Socket, Client, IsSSL),
             [Client ! M || M <- Msgs];
         {error, _Reason} ->
             timer:sleep(ReconnectSleep),
@@ -456,3 +461,32 @@ async_start(State) ->
             {ok, State}
     end.
 
+open_connection(Addr, Port, ConnectOptions, Timeout, false)->
+    gen_tcp:connect(Addr, Port, ConnectOptions, Timeout);
+open_connection(Addr, Port, ConnectOptions, Timeout, true)->
+    ssl:connect(Addr, Port, ConnectOptions, Timeout).
+
+send_to_socket(Socket, Packet, false) ->
+    gen_tcp:send(Socket, Packet);
+send_to_socket(Socket, Packet, true) ->
+    ssl:send(Socket, Packet).
+
+recv_from_socket(Socket, Packet, Timeout, false) ->
+    gen_tcp:recv(Socket, Packet, Timeout);
+recv_from_socket(Socket, Packet, Timeout, true) ->
+    ssl:recv(Socket, Packet, Timeout).
+
+controlling_process(Socket, Client, false) ->
+    gen_tcp:controlling_process(Socket, Client);
+controlling_process(Socket, Client, true) ->
+    ssl:controlling_process(Socket, Client).
+
+close_connection(Socket, false) ->
+    gen_tcp:close(Socket);
+close_connection(Socket, true) ->
+    ssl:close(Socket).
+
+net_setopts(Socket, Opts, false) ->
+    inet:setopts(Socket, Opts);
+net_setopts(Socket, Opts, true) ->
+    ssl:setopts(Socket, Opts).
