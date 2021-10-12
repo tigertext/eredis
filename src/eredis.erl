@@ -37,6 +37,10 @@ start_link() ->
 start_link(Host, Port) ->
     start_link(Host, Port, 0, "").
 
+start_link(Host, Port, Options) when Options =:= []; is_tuple(hd(Options)) ->
+    %% For ElastiCache
+    IsSSL = proplists:get_value(ssl, Options, false),
+    start_link(Host, Port, 0, "", 100, ?TIMEOUT, true, [], IsSSL);
 start_link(Host, Port, Database) ->
     start_link(Host, Port, Database, "").
 
