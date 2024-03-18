@@ -20,11 +20,14 @@
 
           %% When the queue reaches this size, either drop all
           %% messages or exit.
-          max_queue_size :: integer() | inifinity,
+          max_queue_size :: integer() | infinity,
           queue_behaviour :: drop | exit,
 
           % The msg_state keeps track of whether we are waiting
           % for the controlling process to acknowledge the last
           % message.
-          msg_state = need_ack :: ready | need_ack
+          msg_state = need_ack :: ready | need_ack,
+
+          interval :: integer() | undefined,
+          tref :: reference() | undefined
 }).

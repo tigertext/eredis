@@ -44,6 +44,7 @@ stop(Pid) ->
 %%====================================================================
 
 init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
+    Interval = app_config_param_utils:get(eredis_troubleshoot, report_eredis_sub_client_message_queue_len_interval, 1000 * 10),
     State = #state{host            = Host,
                    port            = Port,
                    password        = list_to_binary(Password),
@@ -52,12 +53,16 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
                    parser_state    = eredis_parser:init(),
                    msg_queue       = queue:new(),
                    max_queue_size  = MaxQueueSize,
-                   queue_behaviour = QueueBehaviour},
+                   queue_behaviour = QueueBehaviour,
+                   interval        = Interval,
+                   tref            = Tref},
 
     case connect(State) of
         {ok, NewState} ->
             ok = inet:setopts(NewState#state.socket, [{active, once}]),
-            {ok, NewState};
+            _ = timer:cancel(TimerRef),
+            {ok, New_TimerRef} = timer:send_after(Interval, timeout)
+            {ok, NewState#state{interval=Interval,tref=New_TimerRef}};
         {error, Reason} ->
             {stop, Reason}
     end.
@@ -148,8 +153,10 @@ handle_info({tcp, _Socket, Bs}, State) ->
     ok = inet:setopts(State#state.socket, [{active, once}]),
 
     NewState = handle_response(Bs, State),
-    case queue:len(NewState#state.msg_queue) > NewState#state.max_queue_size of
-        true ->
+    case NewState#state.max_queue_size of
+        infinity ->
+            {noreply, NewState};
+        MaxQueueSize when queue:len(NewState#state.msg_queue) > MaxQueueSize ->
             case State#state.queue_behaviour of
                 drop ->
                     Msg = {dropped, queue:len(NewState#state.msg_queue)},
@@ -158,7 +165,7 @@ handle_info({tcp, _Socket, Bs}, State) ->
                 exit ->
                     {stop, max_queue_size, State}
             end;
-        false ->
+        _ ->
             {noreply, NewState}
     end;
 
@@ -214,10 +221,21 @@ handle_info({'DOWN', Ref, process, Pid, _Reason},
 handle_info(stop, State) ->
     {stop, shutdown, State};
 
+handle_info(timeout, #state{msg_queue=Msg_queue,tref=TimerRef} = State) ->
+    _ = timer:cancel(TimerRef),
+    Interval = app_config_param_utils:get(eredis_sub_client, report_msg_queue_len_interval, 1000 * 10),
+    Max_queue_size = app_config_param_utils:get(eredis_sub_client, max_queue_size, infinity),
+    Queue_behaviour_exit = app_config_param_utils:get(eredis_sub_client, queue_behaviour_exit, true),
+    New_queue_behaviour = case Queue_behaviour_exit of true -> exit; _ -> drop end,
+    {ok, New_TimerRef} = timer:send_after(Interval, timeout)
+    tt_prometheus:report_eredis_sub_client_server_state_msg_queue_len(queue:len(Msg_queue)),
+    {noreply, State#state{tref=New_TimerRef,max_queue_size=Max_queue_size,queue_behaviour=New_queue_behaviour}};
+
 handle_info(_Info, State) ->
     {stop, {unhandled_message, _Info}, State}.
 
-terminate(_Reason, State) ->
+terminate(_Reason, #state{tref=New_TimerRef} = State) ->
+    _ = timer:cancel(TimerRef),
     case State#state.socket of
         undefined -> ok;
         Socket    -> gen_tcp:close(Socket)
