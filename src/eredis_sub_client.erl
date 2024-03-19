@@ -228,7 +228,7 @@ handle_info(timeout, #state{msg_queue=Msg_queue,tref=TimerRef} = State) ->
     Queue_behaviour_exit = app_config_param_utils:get(eredis_sub_client, queue_behaviour_exit, true),
     New_queue_behaviour = case Queue_behaviour_exit of true -> exit; _ -> drop end,
     {ok, New_TimerRef} = timer:send_after(1000 * Interval, timeout),
-    tt_prometheus:report_eredis_sub_client_server_state_msg_queue_len(queue:len(Msg_queue)),
+    tt_prometheus:report_eredis_sub_client_state_msg_queue_len(queue:len(Msg_queue)),
     {noreply, State#state{tref=New_TimerRef,max_queue_size=Max_queue_size,queue_behaviour=New_queue_behaviour}};
 
 handle_info(_Info, State) ->
