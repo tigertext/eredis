@@ -57,9 +57,8 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
     case connect(State) of
         {ok, NewState} ->
             ok = inet:setopts(NewState#state.socket, [{active, once}]),
-            Interval = app_config_param_utils:get(eredis_troubleshoot, report_eredis_sub_client_message_queue_len_interval, 10),
-            {ok, New_TimerRef} = timer:send_after(1000 * Interval, timeout),
-            {ok, NewState#state{interval=Interval,tref=New_TimerRef}};
+            {ok, New_TimerRef} = timer:send_after(1000 * 60, timeout),
+            {ok, NewState#state{interval=60,tref=New_TimerRef}};
         {error, Reason} ->
             {stop, Reason}
     end.
