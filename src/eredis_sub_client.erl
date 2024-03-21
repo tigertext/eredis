@@ -155,13 +155,14 @@ handle_info({tcp, _Socket, Bs}, State) ->
         MaxQueueSize ->
             case (MsgQueueLen = queue:len(NewState#state.msg_queue)) > MaxQueueSize of
                 true ->
-                    lager:error("[eredis_sub_client] server state msg_queue length is greater than max_queue_size, MsgQueueLen is ~p, MaxQueueSize is ~p", [MsgQueueLen, MaxQueueSize]),
                     case State#state.queue_behaviour of
                         drop ->
-                            Msg = {dropped, queue:len(NewState#state.msg_queue)},
+                            Msg = {dropped, MsgQueueLen},
                             send_to_controller(Msg, NewState),
                             {noreply, NewState#state{msg_queue = queue:new()}};
                         exit ->
+                            Msg = {exited, MsgQueueLen},
+                            send_to_controller(Msg, NewState),
                             {stop, max_queue_size, State}
                     end;
                 _ ->
