@@ -9,13 +9,6 @@
 %% Specified in http://www.erlang.org/doc/man/gen_server.html#call-3
 -define(TIMEOUT, 5000).
 
-%% Define queue type if needed
--ifdef(namespaced_types).
--type eredis_queue() :: queue:queue().
--else.
--type eredis_queue() :: queue().
--endif.
-
 -export([start_link/0, start_link/1, start_link/3, start_link/6, stop/1,
          controlling_process/1, controlling_process/2, controlling_process/3,
          ack_message/1, subscribe/2, unsubscribe/2, channels/1]).
