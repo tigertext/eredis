@@ -9,14 +9,6 @@
 -behaviour(gen_server).
 -include("eredis.hrl").
 -include("eredis_sub.hrl").
-
-%% Define queue type if needed
--ifdef(namespaced_types).
--type eredis_queue() :: queue:queue().
--else.
--type eredis_queue() :: queue().
--endif.
-
 %% SSL socket options
 -define(SSL_SOCKET_OPTS, [binary, {active, false}, {reuseaddr, false},
                          {keepalive, false}, {send_timeout, ?SEND_TIMEOUT}]).
