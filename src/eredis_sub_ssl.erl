@@ -19,6 +19,7 @@
 
 -export([psub_example/0,ppub_example/0]).
 
+-export([receiver/1]).% for testing
 %%
 %% PUBLIC API
 %%
@@ -183,3 +184,12 @@ ppub_example() ->
     {ok, P} = eredis:start_link(),
     eredis:q(P, ["PUBLISH", "foo123", "bar"]),
     eredis_client:stop(P). 
+
+%% Helper function to receive messages
+receiver(Sub) ->
+    receive
+        Msg ->
+            io:format("SSL PUBSUB received: ~p~n", [Msg]),
+            eredis_sub_ssl:ack_message(Sub),
+            ?MODULE:receiver(Sub)
+    end.

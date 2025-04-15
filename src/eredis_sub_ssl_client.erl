@@ -8,7 +8,7 @@
 -module(eredis_sub_ssl_client).
 -behaviour(gen_server).
 -include("eredis.hrl").
--include("eredis_sub.hrl").
+-include("eredis_sub.hrl"). 
 %% SSL socket options
 -define(SSL_SOCKET_OPTS, [binary, {active, false}, {reuseaddr, false},
                          {keepalive, false}, {send_timeout, ?SEND_TIMEOUT}]).
@@ -224,12 +224,12 @@ handle_info(stop, State) ->
 
 handle_info(timeout, #state{msg_queue=Msg_queue,tref=TimerRef} = State) ->
     _ = timer:cancel(TimerRef),
-    Interval = app_config_param_utils:get(eredis_sub_ssl_client, report_msg_queue_len_interval, 10),
-    Max_queue_size = app_config_param_utils:get(eredis_sub_ssl_client, max_queue_size, infinity),
-    Queue_behaviour_exit = app_config_param_utils:get(eredis_sub_ssl_client, queue_behaviour_exit, true),
+    Interval = app_config_param_utils:get(eredis_sub_client, report_msg_queue_len_interval, 10),
+    Max_queue_size = app_config_param_utils:get(eredis_sub_client, max_queue_size, infinity),
+    Queue_behaviour_exit = app_config_param_utils:get(eredis_sub_client, queue_behaviour_exit, true),
     New_queue_behaviour = case Queue_behaviour_exit of true -> exit; _ -> drop end,
     {ok, New_TimerRef} = timer:send_after(1000 * Interval, timeout),
-    tt_prometheus:report_eredis_sub_ssl_client_state_msg_queue_len(queue:len(Msg_queue)),
+    tt_prometheus:report_eredis_sub_client_state_msg_queue_len(queue:len(Msg_queue)),
     {noreply, State#state{tref=New_TimerRef,max_queue_size=Max_queue_size,queue_behaviour=New_queue_behaviour}};
 
 handle_info(_Info, State) ->
