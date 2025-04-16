@@ -1,3 +1,5 @@
+-include("eredis.hrl").
+
 %% State in eredis_sub_client
 -record(state, {
           host :: string() | undefined,
@@ -29,5 +31,8 @@
           msg_state = need_ack :: ready | need_ack,
 
           interval :: integer() | undefined,
-          tref :: reference() | undefined
+          tref :: reference() | undefined,
+          
+          %% Whether to use SSL connection
+          is_ssl = false :: boolean()
 }).
