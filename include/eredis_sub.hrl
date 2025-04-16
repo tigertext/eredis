@@ -1,5 +1,3 @@
--include("eredis.hrl").
-
 %% State in eredis_sub_client
 -record(state, {
           host :: string() | undefined,
