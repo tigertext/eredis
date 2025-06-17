@@ -57,8 +57,7 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
     case connect(State) of
         {ok, NewState} ->
             ok = ssl:setopts(NewState#state.socket, [{active, once}]),
-            {ok, New_TimerRef} = timer:send_after(1000 * 60, timeout),
-            {ok, NewState#state{interval=60,tref=New_TimerRef}};
+            {ok, NewState};
         {error, Reason} ->
             {stop, Reason}
     end.
@@ -225,9 +224,8 @@ handle_info(stop, State) ->
 handle_info(_Info, State) ->
     {stop, {unhandled_message, _Info}, State}.
 
-terminate(_Reason, #state{tref=TimerRef} = State) ->
-    _ = timer:cancel(TimerRef),
-    case State#state.socket of
+terminate(_Reason, #state{socket=Socket}) ->
+    case Socket of
         undefined -> ok;
         Socket    -> ssl:close(Socket)
     end,
