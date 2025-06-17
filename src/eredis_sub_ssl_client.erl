@@ -222,15 +222,6 @@ handle_info({'DOWN', Ref, process, Pid, _Reason},
 handle_info(stop, State) ->
     {stop, shutdown, State};
 
-handle_info(timeout, #state{msg_queue=Msg_queue,tref=TimerRef} = State) ->
-    _ = timer:cancel(TimerRef),
-    Interval = 10,
-    Max_queue_size = infinity,
-    Queue_behaviour_exit = true,
-    New_queue_behaviour = case Queue_behaviour_exit of true -> exit; _ -> drop end,
-    {ok, New_TimerRef} = timer:send_after(1000 * Interval, timeout),
-    {noreply, State#state{tref=New_TimerRef,max_queue_size=Max_queue_size,queue_behaviour=New_queue_behaviour}};
-
 handle_info(_Info, State) ->
     {stop, {unhandled_message, _Info}, State}.
 
