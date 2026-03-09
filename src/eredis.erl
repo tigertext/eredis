@@ -84,8 +84,10 @@ start_link(Args) ->
     ConnectTimeout = proplists:get_value(connect_timeout, Args, ?TIMEOUT),
     SocketOptions  = proplists:get_value(socket_options, Args, []),
     IsSSL          = proplists:get_value(ssl, Args, false),
+    Readonly       = proplists:get_value(readonly, Args, false),
 
-    start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, true, SocketOptions, IsSSL).
+    eredis_client:start_link(Host, Port, Database, Password,
+        ReconnectSleep, ConnectTimeout, true, SocketOptions, IsSSL, Readonly).
 
 stop(Client) ->
     eredis_client:stop(Client).
