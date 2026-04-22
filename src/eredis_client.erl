@@ -25,7 +25,7 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/9, stop/1, select_database/3]).
+-export([start_link/9, start_link/10, stop/1, select_database/3]).
 
 -export([do_sync_command/3]).
 
@@ -42,6 +42,7 @@
     reconnect_sleep :: reconnect_sleep() | undefined,
     connect_timeout :: integer() | undefined,
     socket_options :: list(),
+    readonly = false :: boolean(),
     sync_start :: boolean(),
     sync_start_retries = 5 :: pos_integer(),
     socket :: port() | undefined,
@@ -67,6 +68,23 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncS
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
                                     ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL], []).
 
+start_link(Host, Port, Database, Password, ReconnectSleep,
+           ConnectTimeout, SyncStart, SocketOptions, IsSSL, Readonly)
+  when is_list(Host) orelse
+       (is_tuple(Host) andalso tuple_size(Host) =:= 2 andalso
+        element(1, Host) =:= local),
+       is_integer(Port),
+       is_integer(Database) orelse Database == undefined,
+       is_list(Password),
+       is_integer(ReconnectSleep) orelse ReconnectSleep =:= no_reconnect,
+       is_integer(ConnectTimeout),
+       is_boolean(SyncStart),
+       is_list(SocketOptions),
+       is_boolean(Readonly) ->
+    gen_server:start_link(?MODULE, [Host, Port, Database, Password,
+        ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions,
+        IsSSL, Readonly], []).
+
 
 stop(Pid) ->
     gen_server:call(Pid, stop).
@@ -76,6 +94,9 @@ stop(Pid) ->
 %%====================================================================
 
 init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL]) ->
+    init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL, false]);
+
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart, SocketOptions, IsSSL, Readonly]) ->
     State = #state{host = Host,
         port = Port,
         database = read_database(Database),
@@ -84,6 +105,7 @@ init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, SyncStart,
         reconnect_sleep = ReconnectSleep,
         connect_timeout = ConnectTimeout,
         socket_options = SocketOptions,
+        readonly = Readonly,
         sync_start = SyncStart,
         parser_state = eredis_parser:init(),
         queue = queue:new()},
@@ -321,7 +343,12 @@ connect(State) ->
                 ok ->
                     case select_database(Socket, State#state.database, State#state.is_ssl) of
                         ok ->
-                            {ok, State#state{socket = Socket}};
+                            case set_readonly(Socket, State#state.readonly, State#state.is_ssl) of
+                                ok ->
+                                    {ok, State#state{socket = Socket}};
+                                {error, Reason} ->
+                                    {error, {readonly_error, Reason}}
+                            end;
                         {error, Reason} ->
                             {error, {select_error, Reason}}
                     end;
@@ -358,6 +385,11 @@ select_database(_Socket, <<"0">>, _IsSSL) ->
     ok;
 select_database(Socket, Database, IsSSL) ->
     do_sync_command(Socket, ["SELECT", " ", Database, "\r\n"], IsSSL).
+
+set_readonly(_Socket, false, _IsSSL) ->
+    ok;
+set_readonly(Socket, true, IsSSL) ->
+    do_sync_command(Socket, ["READONLY", "\r\n"], IsSSL).
 
 authenticate(_Socket, <<>>, _IsSSL) ->
     ok;
