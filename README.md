@@ -9,6 +9,7 @@ Supported Redis features:
  * Pipelining
  * Authentication & multiple dbs
  * Pubsub
+ * SSL connections
 
 ## Example
 
@@ -26,6 +27,10 @@ copy and paste the following into a shell to try out Eredis:
 To connect to a Redis instance listening on a Unix domain socket:
 
     {ok, C1} = eredis:start_link({local, "/var/run/redis.sock"}, 0).
+
+To connect to a Redis instance with SSL enabled:
+
+    {ok, C2} = eredis:start_link("127.0.0.1", 6379, 0, "", 100, 5000, true).
 
 MSET and MGET:
 
@@ -91,6 +96,13 @@ ok
 3> 
 ```
 
+SSL PubSub:
+
+```erl
+1> {ok, Sub} = eredis_sub:start_link("127.0.0.1", 6379, "", 100, infinity, drop, true).
+2> Receiver = spawn_link(fun() -> eredis_sub:controlling_process(Sub), eredis_sub:subscribe(Sub, [<<"foo">>]), eredis_sub:receiver(Sub) end).
+```
+
 EUnit tests:
 
 ```console
@@ -125,6 +137,7 @@ the following arguments:
 * Reconnect sleep, integer of milliseconds to sleep between reconnect attempts
 * Connect timeout, timeout value in milliseconds to use in `gen_tcp:connect`, default is 5000
 * Socket options, proplist of options to be sent to `gen_tcp:connect`, default is `?SOCKET_OPTS`
+* IsSSL, boolean flag for SSL connection, default is false
 
 ## Reconnecting on Redis down / network failure / timeout / etc
 

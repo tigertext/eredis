@@ -3,20 +3,21 @@
 %%
 -module(eredis_sub).
 -include("eredis.hrl").
+-include("eredis_sub.hrl").
 
 %% Default timeout for calls to the client gen_server
 %% Specified in http://www.erlang.org/doc/man/gen_server.html#call-3
 -define(TIMEOUT, 5000).
 
--export([start_link/0, start_link/1, start_link/3, start_link/6, stop/1,
+-export([start_link/0, start_link/1, start_link/3, start_link/4, start_link/6, start_link/7, stop/1,
          controlling_process/1, controlling_process/2, controlling_process/3,
          ack_message/1, subscribe/2, unsubscribe/2, channels/1]).
 
 -export([psubscribe/2,punsubscribe/2]).
 
--export([receiver/1, sub_example/0, pub_example/0]).
+-export([receiver/1, sub_example/0, pub_example/0, ssl_sub_example/0]).
 
--export([psub_example/0,ppub_example/0]).
+-export([psub_example/0,ppub_example/0, ssl_psub_example/0]).
 
 %%
 %% PUBLIC API
@@ -27,6 +28,10 @@ start_link() ->
 
 start_link(Host, Port, Password) ->
     start_link(Host, Port, Password, 100, infinity, drop).
+    start_link([]).
+
+start_link(Host, Port, Password, IsSSL) ->
+    start_link(Host, Port, Password, 100, infinity, drop, IsSSL).
 
 start_link(Host, Port, Password, ReconnectSleep,
            MaxQueueSize, QueueBehaviour)
@@ -38,7 +43,21 @@ start_link(Host, Port, Password, ReconnectSleep,
        (QueueBehaviour =:= drop orelse QueueBehaviour =:= exit) ->
 
     eredis_sub_client:start_link(Host, Port, Password, ReconnectSleep,
-                                 MaxQueueSize, QueueBehaviour).
+                                 MaxQueueSize, QueueBehaviour, false).
+
+%% @doc: Start link with SSL support
+start_link(Host, Port, Password, ReconnectSleep,
+           MaxQueueSize, QueueBehaviour, IsSSL)
+  when is_list(Host) andalso
+       is_integer(Port) andalso
+       is_list(Password) andalso
+       (is_integer(ReconnectSleep) orelse ReconnectSleep =:= no_reconnect) andalso
+       (is_integer(MaxQueueSize) orelse MaxQueueSize =:= infinity) andalso
+       (QueueBehaviour =:= drop orelse QueueBehaviour =:= exit) andalso
+       is_boolean(IsSSL) ->
+
+    eredis_sub_client:start_link(Host, Port, Password, ReconnectSleep,
+                                 MaxQueueSize, QueueBehaviour, IsSSL).
 
 
 %% @doc: Callback for starting from poolboy
@@ -50,8 +69,9 @@ start_link(Args) ->
     ReconnectSleep = proplists:get_value(reconnect_sleep, Args, 100),
     MaxQueueSize   = proplists:get_value(max_queue_size, Args, infinity),
     QueueBehaviour = proplists:get_value(queue_behaviour, Args, drop),
+    IsSSL          = proplists:get_value(is_ssl, Args, false),
     start_link(Host, Port, Password, ReconnectSleep,
-               MaxQueueSize, QueueBehaviour).
+               MaxQueueSize, QueueBehaviour, IsSSL).
 
 stop(Pid) ->
     eredis_sub_client:stop(Pid).
@@ -182,5 +202,25 @@ ppub_example() ->
     {ok, P} = eredis:start_link(),
     eredis:q(P, ["PUBLISH", "foo123", "bar"]),
     eredis_client:stop(P).
+
+%% @doc: Example of SSL subscription
+ssl_sub_example() ->
+    {ok, Sub} = start_link("127.0.0.1", 6379, "", 100, infinity, drop, true),
+    Receiver = spawn_link(fun () ->
+                                controlling_process(Sub),
+                                subscribe(Sub, [<<"foo">>]),
+                                receiver(Sub)
+                         end),
+    {Sub, Receiver}.
+
+%% @doc: Example of SSL pattern subscription
+ssl_psub_example() ->
+    {ok, Sub} = start_link("127.0.0.1", 6379, "", 100, infinity, drop, true),
+    Receiver = spawn_link(fun () ->
+                                controlling_process(Sub),
+                                psubscribe(Sub, [<<"foo*">>]),
+                                receiver(Sub)
+                         end),
+    {Sub, Receiver}.
 
 

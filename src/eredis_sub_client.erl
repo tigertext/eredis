@@ -14,7 +14,7 @@
 
 
 %% API
--export([start_link/6, stop/1]).
+-export([start_link/6, start_link/7, stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -32,7 +32,19 @@
                  QueueBehaviour::drop | exit) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
 start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour) ->
-    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour],
+    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, false],
+    gen_server:start_link(?MODULE, Args, []).
+
+-spec start_link(Host::list(),
+                 Port::integer(),
+                 Password::string(),
+                 ReconnectSleep::reconnect_sleep(),
+                 MaxQueueSize::integer() | infinity,
+                 QueueBehaviour::drop | exit,
+                 IsSSL::boolean()) ->
+                        {ok, Pid::pid()} | {error, Reason::term()}.
+start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, IsSSL) ->
+    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, IsSSL],
     gen_server:start_link(?MODULE, Args, []).
 
 
@@ -43,7 +55,7 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
+init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, IsSSL]) ->
     State = #state{host            = Host,
                    port            = Port,
                    password        = list_to_binary(Password),
@@ -52,11 +64,17 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
                    parser_state    = eredis_parser:init(),
                    msg_queue       = queue:new(),
                    max_queue_size  = MaxQueueSize,
-                   queue_behaviour = QueueBehaviour},
+                   queue_behaviour = QueueBehaviour,
+                   is_ssl          = IsSSL},
 
     case connect(State) of
         {ok, NewState} ->
-            ok = inet:setopts(NewState#state.socket, [{active, once}]),
+            case NewState#state.is_ssl of
+                true ->
+                    ok = ssl:setopts(NewState#state.socket, [{active, once}]);
+                false ->
+                    ok = inet:setopts(NewState#state.socket, [{active, once}])
+            end,
             {ok, New_TimerRef} = timer:send_after(1000 * 60, timeout),
             {ok, NewState#state{interval=60,tref=New_TimerRef}};
         {error, Reason} ->
@@ -108,14 +126,24 @@ handle_cast({ack_message, Pid},
 
 handle_cast({subscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["SUBSCRIBE" | Channels]),
-    ok = gen_tcp:send(State#state.socket, Command),
+    case State#state.is_ssl of
+        true ->
+            ok = ssl:send(State#state.socket, Command);
+        false ->
+            ok = gen_tcp:send(State#state.socket, Command)
+    end,
     NewChannels = add_channels(Channels, State#state.channels),
     {noreply, State#state{channels = NewChannels}};
 
 
 handle_cast({psubscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["PSUBSCRIBE" | Channels]),
-    ok = gen_tcp:send(State#state.socket, Command),
+    case State#state.is_ssl of
+        true ->
+            ok = ssl:send(State#state.socket, Command);
+        false ->
+            ok = gen_tcp:send(State#state.socket, Command)
+    end,
     NewChannels = add_channels(Channels, State#state.channels),
     {noreply, State#state{channels = NewChannels}};
 
@@ -123,7 +151,12 @@ handle_cast({psubscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} 
 
 handle_cast({unsubscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["UNSUBSCRIBE" | Channels]),
-    ok = gen_tcp:send(State#state.socket, Command),
+    case State#state.is_ssl of
+        true ->
+            ok = ssl:send(State#state.socket, Command);
+        false ->
+            ok = gen_tcp:send(State#state.socket, Command)
+    end,
     NewChannels = remove_channels(Channels, State#state.channels),
     {noreply, State#state{channels = NewChannels}};
 
@@ -131,7 +164,12 @@ handle_cast({unsubscribe, Pid, Channels}, #state{controlling_process = {_, Pid}}
 
 handle_cast({punsubscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["PUNSUBSCRIBE" | Channels]),
-    ok = gen_tcp:send(State#state.socket, Command),
+    case State#state.is_ssl of
+        true ->
+            ok = ssl:send(State#state.socket, Command);
+        false ->
+            ok = gen_tcp:send(State#state.socket, Command)
+    end,
     NewChannels = remove_channels(Channels, State#state.channels),
     {noreply, State#state{channels = NewChannels}};
 
@@ -147,30 +185,17 @@ handle_cast(_Msg, State) ->
 %% Receive data from socket, see handle_response/2
 handle_info({tcp, _Socket, Bs}, State) ->
     ok = inet:setopts(State#state.socket, [{active, once}]),
+    process_response(Bs, State);
 
-    NewState = handle_response(Bs, State),
-    case NewState#state.max_queue_size of
-        infinity ->
-            {noreply, NewState};
-        MaxQueueSize ->
-            case (MsgQueueLen = queue:len(NewState#state.msg_queue)) > MaxQueueSize of
-                true ->
-                    case State#state.queue_behaviour of
-                        drop ->
-                            Msg = {dropped, MsgQueueLen},
-                            send_to_controller(Msg, NewState),
-                            {noreply, NewState#state{msg_queue = queue:new()}};
-                        exit ->
-                            Msg = {exited, MsgQueueLen},
-                            send_to_controller(Msg, NewState),
-                            {stop, max_queue_size, State}
-                    end;
-                _ ->
-                    {noreply, NewState}
-            end
-    end;
+handle_info({ssl, _Socket, Bs}, State) ->
+    ok = ssl:setopts(State#state.socket, [{active, once}]),
+    process_response(Bs, State);
 
 handle_info({tcp_error, _Socket, _Reason}, State) ->
+    %% This will be followed by a close
+    {noreply, State};
+
+handle_info({ssl_error, _Socket, _Reason}, State) ->
     %% This will be followed by a close
     {noreply, State};
 
@@ -182,7 +207,20 @@ handle_info({tcp_closed, _Socket}, #state{reconnect_sleep = no_reconnect} = Stat
     %% If we aren't going to reconnect, then there is nothing else for this process to do.
     {stop, normal, State#state{socket = undefined}};
 
+handle_info({ssl_closed, _Socket}, #state{reconnect_sleep = no_reconnect} = State) ->
+    %% If we aren't going to reconnect, then there is nothing else for this process to do.
+    {stop, normal, State#state{socket = undefined}};
+
 handle_info({tcp_closed, _Socket}, State) ->
+    Self = self(),
+    send_to_controller({eredis_disconnected, Self}, State),
+    spawn(fun() -> reconnect_loop(Self, State) end),
+
+    %% Throw away the socket. The absence of a socket is used to
+    %% signal we are "down"; discard possibly patrially parsed data
+    {noreply, State#state{socket = undefined, parser_state = eredis_parser:init()}};
+
+handle_info({ssl_closed, _Socket}, State) ->
     Self = self(),
     send_to_controller({eredis_disconnected, Self}, State),
     spawn(fun() -> reconnect_loop(Self, State) end),
@@ -206,7 +244,12 @@ handle_info({reconnect_failed, Reason}, State) ->
 %% already connected and authenticated.
 handle_info({connection_ready, Socket}, #state{socket = undefined} = State) ->
     send_to_controller({eredis_connected, self()}, State),
-    ok = inet:setopts(Socket, [{active, once}]),
+    case State#state.is_ssl of
+        true ->
+            ok = ssl:setopts(Socket, [{active, once}]);
+        false ->
+            ok = inet:setopts(Socket, [{active, once}])
+    end,
     {noreply, State#state{socket = Socket}};
 
 
@@ -239,7 +282,11 @@ terminate(_Reason, #state{tref=TimerRef} = State) ->
     _ = timer:cancel(TimerRef),
     case State#state.socket of
         undefined -> ok;
-        Socket    -> gen_tcp:close(Socket)
+        Socket -> 
+            case State#state.is_ssl of
+                true -> ssl:close(Socket);
+                false -> gen_tcp:close(Socket)
+            end
     end,
     ok.
 
@@ -264,6 +311,30 @@ add_channels(Channels, OldChannels) ->
                 [C|Cs]
         end
     end, OldChannels, Channels).
+
+%% Helper function to process incoming responses
+process_response(Bs, State) ->
+    NewState = handle_response(Bs, State),
+    case NewState#state.max_queue_size of
+        infinity ->
+            {noreply, NewState};
+        MaxQueueSize ->
+            case (MsgQueueLen = queue:len(NewState#state.msg_queue)) > MaxQueueSize of
+                true ->
+                    case State#state.queue_behaviour of
+                        drop ->
+                            Msg = {dropped, MsgQueueLen},
+                            send_to_controller(Msg, NewState),
+                            {noreply, NewState#state{msg_queue = queue:new()}};
+                        exit ->
+                            Msg = {exited, MsgQueueLen},
+                            send_to_controller(Msg, NewState),
+                            {stop, max_queue_size, State}
+                    end;
+                _ ->
+                    {noreply, NewState}
+            end
+    end.
 
 -spec handle_response(Data::binary(), State::#state{}) -> NewState::#state{}.
 %% @doc: Handle the response coming from Redis. This should only be
@@ -329,9 +400,30 @@ queue_or_send(Msg, State) ->
 %% synchronous and if Redis returns something we don't expect, we
 %% crash. Returns {ok, State} or {error, Reason}.
 connect(State) ->
+    case State#state.is_ssl of
+        true ->
+            ssl_connect(State);
+        false ->
+            normal_connect(State)
+    end.
+
+normal_connect(State) ->
     case gen_tcp:connect(State#state.host, State#state.port, [?SOCKET_MODE | ?SOCKET_OPTS]) of
         {ok, Socket} ->
-            case authenticate(Socket, State#state.password) of
+            case authenticate(Socket, State#state.password, false) of
+                ok ->
+                    {ok, State#state{socket = Socket}};
+                {error, Reason} ->
+                    {error, {authentication_error, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {connection_error, Reason}}
+    end.
+
+ssl_connect(State) ->
+    case ssl:connect(State#state.host, State#state.port, [?SOCKET_MODE | ?SOCKET_OPTS]) of
+        {ok, Socket} ->
+            case authenticate(Socket, State#state.password, true) of
                 ok ->
                     {ok, State#state{socket = Socket}};
                 {error, Reason} ->
@@ -342,11 +434,38 @@ connect(State) ->
     end.
 
 
-authenticate(_Socket, <<>>) ->
+authenticate(_Socket, <<>>, _IsSSL) ->
     ok;
-authenticate(Socket, Password) ->
-    eredis_client:do_sync_command(Socket, ["AUTH", " \"", Password, "\"\r\n"]).
+authenticate(Socket, Password, IsSSL) ->
+    Command = ["AUTH", " \"", Password, "\"\r\n"],
+    do_sync_command(Socket, Command, IsSSL).
 
+%% Helper function for synchronous command execution
+do_sync_command(Socket, Command, true) ->
+    case ssl:send(Socket, Command) of
+        ok ->
+            case ssl_recv(Socket, 0, ?RECV_TIMEOUT) of
+                {ok, <<"+OK\r\n">>} ->
+                    ok;
+                {ok, <<"-", Error/binary>>} ->
+                    {error, Error};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+do_sync_command(Socket, Command, false) ->
+    eredis_client:do_sync_command(Socket, Command).
+
+%% Helper function to receive data from an SSL socket
+ssl_recv(Socket, Length, Timeout) ->
+    case ssl:recv(Socket, Length, Timeout) of
+        {ok, Data} ->
+            {ok, Data};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% @doc: Loop until a connection can be established, this includes
 %% successfully issuing the auth and select calls. When we have a
@@ -355,7 +474,12 @@ reconnect_loop(Client, #state{reconnect_sleep=ReconnectSleep}=State) ->
     Client ! reconnect_attempt,
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
-            gen_tcp:controlling_process(Socket, Client),
+            case State#state.is_ssl of
+                true ->
+                    ssl:controlling_process(Socket, Client);
+                false ->
+                    gen_tcp:controlling_process(Socket, Client)
+            end,
             Client ! {connection_ready, Socket};
         {error, Reason} ->
             Client ! {reconnect_failed, Reason},

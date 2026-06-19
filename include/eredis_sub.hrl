@@ -29,5 +29,8 @@
           msg_state = need_ack :: ready | need_ack,
 
           interval :: integer() | undefined,
-          tref :: reference() | undefined
+          tref :: reference() | undefined,
+          
+          %% Whether to use SSL connection
+          is_ssl = false :: boolean()
 }).
