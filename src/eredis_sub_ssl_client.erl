@@ -46,7 +46,8 @@ start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour) -
                  QueueBehaviour::drop | exit,
                  BatchSize::pos_integer()) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize) ->
+start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize)
+  when is_integer(BatchSize), BatchSize > 0 ->
     Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize],
     gen_server:start_link(?MODULE, Args, []).
 

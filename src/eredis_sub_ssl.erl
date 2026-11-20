@@ -104,6 +104,13 @@ stop(Pid) ->
 %%     This is sent when the eredis client reconnects to redis after
 %%     an existing connection was disconnected.
 %%
+%%   {messages, [Msg], pid()}
+%%     Batch mode only (batch_size > 1 in start_link/1 or start_link/7).
+%%     Carries up to batch_size of the acked messages above (message,
+%%     pmessage, subscribed, unsubscribed) in arrival order, each exactly
+%%     as single mode would send it. Ack once per batch. Connection
+%%     events, dropped and exited are never batched.
+%%
 %% Any message of the form {message, _, _, _} must be acknowledged
 %% before any subsequent message of the same form is sent. This
 %% prevents the controlling process from being overrun with redis

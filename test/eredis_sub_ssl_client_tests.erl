@@ -84,12 +84,19 @@ batch_on_ack_test() ->
     S0 = (state())#state{batch_size = 3},
     S = lists:foldl(fun eredis_sub_ssl_client:queue_or_send/2, S0, Msgs),
     S1 = ack(S),
-    [M1, M2, M3 | _] = Msgs,
+    [M1, M2, M3, M4, M5] = Msgs,
     receive {messages, Batch, _} -> ?assertEqual([M1, M2, M3], Batch)
     after 0 -> ?assert(false) end,
     ?assertEqual(2, S1#state.msg_queue_len),
     ?assertEqual(2, queue:len(S1#state.msg_queue)),
     ?assertEqual(need_ack, S1#state.msg_state),
+    S2 = ack(S1),
+    receive {messages, Batch2, _} -> ?assertEqual([M4, M5], Batch2)
+    after 0 -> ?assert(false) end,
+    ?assertEqual(0, S2#state.msg_queue_len),
+    ?assertEqual(need_ack, S2#state.msg_state),
+    S3 = ack(S2),
+    ?assertEqual(ready, S3#state.msg_state),
     flush().
 
 ready_sends_batch_of_one_test() ->
