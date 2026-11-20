@@ -27,7 +27,7 @@ start_link() ->
     start_link([]).
 
 start_link(Host, Port, Password) ->
-    start_link(Host, Port, Password, 100, infinity, drop).
+    start_link(Host, Port, Password, 100, 40000, exit).
 
 start_link(Host, Port, Password, ReconnectSleep,
            MaxQueueSize, QueueBehaviour)
@@ -49,8 +49,8 @@ start_link(Args) ->
     Port           = proplists:get_value(port, Args, 6379),
     Password       = proplists:get_value(password, Args, ""),
     ReconnectSleep = proplists:get_value(reconnect_sleep, Args, 100),
-    MaxQueueSize   = proplists:get_value(max_queue_size, Args, infinity),
-    QueueBehaviour = proplists:get_value(queue_behaviour, Args, drop),
+    MaxQueueSize   = proplists:get_value(max_queue_size, Args, 40000),
+    QueueBehaviour = proplists:get_value(queue_behaviour, Args, exit),
     start_link(Host, Port, Password, ReconnectSleep,
                MaxQueueSize, QueueBehaviour).
 
