@@ -32,6 +32,10 @@
           % message.
           msg_state = need_ack :: ready | need_ack,
 
+          %% Messages per delivery. 1 sends each message bare; above 1
+          %% sends {messages, [Msg], Pid}, one ack per batch.
+          batch_size = 1 :: pos_integer(),
+
           interval :: integer() | undefined,
           tref :: reference() | undefined
 }).

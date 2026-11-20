@@ -9,7 +9,7 @@
 %% Specified in http://www.erlang.org/doc/man/gen_server.html#call-3
 -define(TIMEOUT, 5000).
 
--export([start_link/0, start_link/1, start_link/3, start_link/6, stop/1,
+-export([start_link/0, start_link/1, start_link/3, start_link/6, start_link/7, stop/1,
          controlling_process/1, controlling_process/2, controlling_process/3,
          ack_message/1, subscribe/2, unsubscribe/2, channels/1]).
 
@@ -41,6 +41,21 @@ start_link(Host, Port, Password, ReconnectSleep,
     eredis_sub_ssl_client:start_link(Host, Port, Password, ReconnectSleep,
                                  MaxQueueSize, QueueBehaviour).
 
+%% @doc: As start_link/6, but deliver up to BatchSize messages per ack
+%% as {messages, [Msg], pid()}. BatchSize 1 keeps the one-message protocol.
+start_link(Host, Port, Password, ReconnectSleep,
+           MaxQueueSize, QueueBehaviour, BatchSize)
+  when is_list(Host) andalso
+       is_integer(Port) andalso
+       is_list(Password) andalso
+       (is_integer(ReconnectSleep) orelse ReconnectSleep =:= no_reconnect) andalso
+       (is_integer(MaxQueueSize) orelse MaxQueueSize =:= infinity) andalso
+       (QueueBehaviour =:= drop orelse QueueBehaviour =:= exit) andalso
+       (is_integer(BatchSize) andalso BatchSize > 0) ->
+
+    eredis_sub_ssl_client:start_link(Host, Port, Password, ReconnectSleep,
+                                 MaxQueueSize, QueueBehaviour, BatchSize).
+
 
 %% @doc: Callback for starting from poolboy
 -spec start_link(server_args()) -> {ok, Pid::pid()} | {error, Reason::term()}.
@@ -51,8 +66,9 @@ start_link(Args) ->
     ReconnectSleep = proplists:get_value(reconnect_sleep, Args, 100),
     MaxQueueSize   = proplists:get_value(max_queue_size, Args, 40000),
     QueueBehaviour = proplists:get_value(queue_behaviour, Args, exit),
+    BatchSize      = proplists:get_value(batch_size, Args, 1),
     start_link(Host, Port, Password, ReconnectSleep,
-               MaxQueueSize, QueueBehaviour).
+               MaxQueueSize, QueueBehaviour, BatchSize).
 
 stop(Pid) ->
     eredis_sub_ssl_client:stop(Pid).

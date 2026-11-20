@@ -64,9 +64,58 @@ timeout_keeps_start_limit_test() ->
 start_link3_defaults_test() ->
     meck:new(eredis_sub_ssl_client, [passthrough]),
     meck:expect(eredis_sub_ssl_client, start_link, fun(_, _, _, _, M, B) -> {ok, {M, B}} end),
+    meck:expect(eredis_sub_ssl_client, start_link, fun(_, _, _, _, M, B, _) -> {ok, {M, B}} end),
     try
         ?assertEqual({ok, {40000, exit}}, eredis_sub_ssl:start_link("h", 1, "")),
         ?assertEqual({ok, {40000, exit}}, eredis_sub_ssl:start_link([]))
+    after
+        meck:unload(eredis_sub_ssl_client)
+    end.
+
+overflow_drop_test() ->
+    S = (state())#state{max_queue_size = 2, queue_behaviour = drop},
+    {noreply, S1} = eredis_sub_ssl_client:check_queue(enqueue(3, S)),
+    ?assertEqual(0, S1#state.msg_queue_len),
+    ?assert(queue:is_empty(S1#state.msg_queue)),
+    receive {dropped, 3} -> ok after 0 -> ?assert(false) end.
+
+batch_on_ack_test() ->
+    Msgs = [{message, <<"c">>, integer_to_binary(I), self()} || I <- lists:seq(1, 5)],
+    S0 = (state())#state{batch_size = 3},
+    S = lists:foldl(fun eredis_sub_ssl_client:queue_or_send/2, S0, Msgs),
+    S1 = ack(S),
+    [M1, M2, M3 | _] = Msgs,
+    receive {messages, Batch, _} -> ?assertEqual([M1, M2, M3], Batch)
+    after 0 -> ?assert(false) end,
+    ?assertEqual(2, S1#state.msg_queue_len),
+    ?assertEqual(2, queue:len(S1#state.msg_queue)),
+    ?assertEqual(need_ack, S1#state.msg_state),
+    flush().
+
+ready_sends_batch_of_one_test() ->
+    M = msg(),
+    S = (state())#state{batch_size = 3, msg_state = ready},
+    S1 = eredis_sub_ssl_client:queue_or_send(M, S),
+    receive {messages, [M], _} -> ok after 0 -> ?assert(false) end,
+    ?assertEqual(need_ack, S1#state.msg_state),
+    flush().
+
+batch_size_one_unchanged_test() ->
+    flush(),
+    M = msg(),
+    S = (state())#state{batch_size = 1, msg_state = ready},
+    _ = ack(enqueue(1, eredis_sub_ssl_client:queue_or_send(M, S))),
+    receive M -> ok after 0 -> ?assert(false) end,
+    receive M -> ok after 0 -> ?assert(false) end,
+    receive Other -> ?assertEqual(none, Other) after 0 -> ok end.
+
+start_link1_batch_size_test() ->
+    meck:new(eredis_sub_ssl_client, [passthrough]),
+    meck:expect(eredis_sub_ssl_client, start_link, fun(_, _, _, _, _, _, N) -> {ok, N} end),
+    try
+        ?assertEqual({ok, 500}, eredis_sub_ssl:start_link([{batch_size, 500}])),
+        ?assertEqual({ok, 1}, eredis_sub_ssl:start_link([])),
+        ?assertError(function_clause, eredis_sub_ssl:start_link([{batch_size, 0}]))
     after
         meck:unload(eredis_sub_ssl_client)
     end.

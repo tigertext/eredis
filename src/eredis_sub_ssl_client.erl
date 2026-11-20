@@ -14,7 +14,7 @@
                          {keepalive, false}, {send_timeout, ?SEND_TIMEOUT}]).
 
 %% API
--export([start_link/6, stop/1]).
+-export([start_link/6, start_link/7, stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -36,7 +36,18 @@
                  QueueBehaviour::drop | exit) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
 start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour) ->
-    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour],
+    start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, 1).
+
+-spec start_link(Host::list(),
+                 Port::integer(),
+                 Password::string(),
+                 ReconnectSleep::reconnect_sleep(),
+                 MaxQueueSize::integer() | infinity,
+                 QueueBehaviour::drop | exit,
+                 BatchSize::pos_integer()) ->
+                        {ok, Pid::pid()} | {error, Reason::term()}.
+start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize) ->
+    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize],
     gen_server:start_link(?MODULE, Args, []).
 
 
@@ -47,7 +58,7 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
+init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize]) ->
     State = #state{host            = Host,
                    port            = Port,
                    password        = list_to_binary(Password),
@@ -56,7 +67,8 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
                    parser_state    = eredis_parser:init(),
                    msg_queue       = queue:new(),
                    max_queue_size  = MaxQueueSize,
-                   queue_behaviour = QueueBehaviour},
+                   queue_behaviour = QueueBehaviour,
+                   batch_size      = BatchSize},
 
     case connect(State) of
         {ok, NewState} ->
@@ -96,21 +108,22 @@ handle_cast({ack_message, Pid},
             #state{controlling_process={_, Pid}, socket = undefined} = State) ->
     {noreply, State#state{msg_state = ready}};
 
-%% Controlling process acknowledges receipt of previous message. Send
-%% the next if there is any messages queued or ask for more on the
-%% socket.
+%% Controlling process acknowledges receipt of previous delivery. Send
+%% the next batch (up to batch_size) if any messages are queued,
+%% otherwise forward the next message as soon as it arrives.
 handle_cast({ack_message, Pid},
-            #state{controlling_process={_, Pid}} = State) ->
-    NewState = case queue:out(State#state.msg_queue) of
-                   {empty, _Queue} ->
-                       State#state{msg_state = ready};
-                   {{value, Msg}, Queue} ->
-                       send_to_controller(Msg, State),
-                       State#state{msg_queue = Queue,
-                                   msg_queue_len = State#state.msg_queue_len - 1,
-                                   msg_state = need_ack}
-               end,
-    {noreply, NewState};
+            #state{controlling_process={_, Pid}, msg_queue_len = 0} = State) ->
+    {noreply, State#state{msg_state = ready}};
+handle_cast({ack_message, Pid},
+            #state{controlling_process={_, Pid}, msg_queue_len = Len,
+                   batch_size = BatchSize} = State) ->
+    %% queue:split/2 raises when N exceeds the queue length.
+    N = min(BatchSize, Len),
+    {Batch, Queue} = queue:split(N, State#state.msg_queue),
+    deliver(queue:to_list(Batch), State),
+    {noreply, State#state{msg_queue = Queue,
+                          msg_queue_len = Len - N,
+                          msg_state = need_ack}};
 
 handle_cast({subscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["SUBSCRIBE" | Channels]),
@@ -316,9 +329,16 @@ queue_or_send(Msg, State) ->
                         msg_queue_len = Len,
                         peak_queue_len = max(Len, State#state.peak_queue_len)};
         ready ->
-            send_to_controller(Msg, State),
+            deliver([Msg], State),
             State#state{msg_state = need_ack}
     end.
+
+%% @doc: Send acked-protocol messages to the controller: bare when
+%% batch_size is 1 (the original protocol), wrapped otherwise.
+deliver([Msg], #state{batch_size = 1} = State) ->
+    send_to_controller(Msg, State);
+deliver(Msgs, State) ->
+    send_to_controller({messages, Msgs, self()}, State).
 
 
 %% @doc: Helper for connecting to Redis. These commands are
