@@ -167,7 +167,9 @@ connection_failure_during_start_no_reconnect_test() ->
 
 connection_failure_during_start_reconnect_test() ->
     process_flag(trap_exit, true),
-    Res = eredis:start_link("localhost", 6378, 0, "", 100),
+    %% start_link/5 connects synchronously in this fork (49c714f), so ask for
+    %% the async start this test covers.
+    Res = eredis:start_link("localhost", 6378, 0, "", 100, 5000, false, [], false),
     ?assertMatch({ok, _}, Res),
     {ok, ClientPid} = Res,
     IsDead = receive {'EXIT', ClientPid, _} -> died
@@ -199,8 +201,12 @@ tcp_closed_rig(C) ->
             {3, tcp_closed}],
     Pids = [ remote_query(DoSend, M) || M <- Msgs ],
     Results = gather_remote_queries(Pids),
-    ?assertEqual({error, tcp_closed}, proplists:get_value(1, Results)),
-    ?assertEqual({error, tcp_closed}, proplists:get_value(2, Results)).
+    %% A query that reaches the client after the close gets no_connection
+    %% instead of tcp_closed; either way it errors instead of hanging.
+    ?assertMatch({error, E} when E =:= tcp_closed; E =:= no_connection,
+                 proplists:get_value(1, Results)),
+    ?assertMatch({error, E} when E =:= tcp_closed; E =:= no_connection,
+                 proplists:get_value(2, Results)).
 
 remote_query(Fun, {Id, Cmd}) ->
     Parent = self(),
