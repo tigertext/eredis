@@ -323,7 +323,3 @@ status_inside_multibulk_test() ->
 error_inside_multibulk_test() ->
     B = <<"*2\r\n-ERR foobar\r\n:1\r\n">>,
     ?assertEqual({ok, [<<"ERR foobar">>, <<"1">>], init()}, parse(init(), B)).
-
-%% CP-952 temporary: proves CI goes red. Reverted in the next commit.
-ci_red_check_test() ->
-    ?assertEqual(1, 2).
