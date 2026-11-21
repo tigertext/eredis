@@ -9,7 +9,7 @@
 %% Specified in http://www.erlang.org/doc/man/gen_server.html#call-3
 -define(TIMEOUT, 5000).
 
--export([start_link/0, start_link/1, start_link/3, start_link/6, stop/1,
+-export([start_link/0, start_link/1, start_link/3, start_link/6, start_link/7, stop/1,
          controlling_process/1, controlling_process/2, controlling_process/3,
          ack_message/1, subscribe/2, unsubscribe/2, channels/1]).
 
@@ -27,7 +27,7 @@ start_link() ->
     start_link([]).
 
 start_link(Host, Port, Password) ->
-    start_link(Host, Port, Password, 100, infinity, drop).
+    start_link(Host, Port, Password, 100, 40000, exit).
 
 start_link(Host, Port, Password, ReconnectSleep,
            MaxQueueSize, QueueBehaviour)
@@ -41,6 +41,21 @@ start_link(Host, Port, Password, ReconnectSleep,
     eredis_sub_ssl_client:start_link(Host, Port, Password, ReconnectSleep,
                                  MaxQueueSize, QueueBehaviour).
 
+%% @doc: As start_link/6, but deliver up to BatchSize messages per ack
+%% as {messages, [Msg], pid()}. BatchSize 1 keeps the one-message protocol.
+start_link(Host, Port, Password, ReconnectSleep,
+           MaxQueueSize, QueueBehaviour, BatchSize)
+  when is_list(Host) andalso
+       is_integer(Port) andalso
+       is_list(Password) andalso
+       (is_integer(ReconnectSleep) orelse ReconnectSleep =:= no_reconnect) andalso
+       (is_integer(MaxQueueSize) orelse MaxQueueSize =:= infinity) andalso
+       (QueueBehaviour =:= drop orelse QueueBehaviour =:= exit) andalso
+       (is_integer(BatchSize) andalso BatchSize > 0) ->
+
+    eredis_sub_ssl_client:start_link(Host, Port, Password, ReconnectSleep,
+                                 MaxQueueSize, QueueBehaviour, BatchSize).
+
 
 %% @doc: Callback for starting from poolboy
 -spec start_link(server_args()) -> {ok, Pid::pid()} | {error, Reason::term()}.
@@ -49,10 +64,11 @@ start_link(Args) ->
     Port           = proplists:get_value(port, Args, 6379),
     Password       = proplists:get_value(password, Args, ""),
     ReconnectSleep = proplists:get_value(reconnect_sleep, Args, 100),
-    MaxQueueSize   = proplists:get_value(max_queue_size, Args, infinity),
-    QueueBehaviour = proplists:get_value(queue_behaviour, Args, drop),
+    MaxQueueSize   = proplists:get_value(max_queue_size, Args, 40000),
+    QueueBehaviour = proplists:get_value(queue_behaviour, Args, exit),
+    BatchSize      = proplists:get_value(batch_size, Args, 1),
     start_link(Host, Port, Password, ReconnectSleep,
-               MaxQueueSize, QueueBehaviour).
+               MaxQueueSize, QueueBehaviour, BatchSize).
 
 stop(Pid) ->
     eredis_sub_ssl_client:stop(Pid).
@@ -87,6 +103,13 @@ stop(Pid) ->
 %%   {eredis_connected, pid()}
 %%     This is sent when the eredis client reconnects to redis after
 %%     an existing connection was disconnected.
+%%
+%%   {messages, [Msg], pid()}
+%%     Batch mode only (batch_size > 1 in start_link/1 or start_link/7).
+%%     Carries up to batch_size of the acked messages above (message,
+%%     pmessage, subscribed, unsubscribed) in arrival order, each exactly
+%%     as single mode would send it. Ack once per batch. Connection
+%%     events, dropped and exited are never batched.
 %%
 %% Any message of the form {message, _, _, _} must be acknowledged
 %% before any subsequent message of the same form is sent. This
