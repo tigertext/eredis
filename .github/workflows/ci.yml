@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [xmpp_only]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  eunit:
+    # x86_64: xmpp, the consumer of this fork, deploys on x86_64.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # OTP 22.3 matches xmpp's build image. Host network because the tests
+      # connect to Redis on 127.0.0.1:6379.
+      - name: rebar3 eunit (OTP 22)
+        run: >-
+          docker run --rm --network host -v "$PWD:/w" -w /w
+          erlang:22@sha256:fe2c572ef1aaed67214c5529b57311f0806f58696fcb2f2a1c9bf33bdc75fe43
+          rebar3 eunit

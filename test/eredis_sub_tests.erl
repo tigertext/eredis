@@ -134,7 +134,9 @@ crash_queue_test() ->
     [eredis:q(Pub, [publish, foo, N]) || N <- lists:seq(1, 12)],
 
     receive M1 -> ?assertEqual({message,<<"foo">>,<<"1">>, Sub}, M1) end,
-    receive M2 -> ?assertEqual({'DOWN', Ref, process, Sub, max_queue_size}, M2) end.
+    %% The fork tells the controller before it exits (9427287).
+    receive M2 -> ?assertMatch({exited, _}, M2) end,
+    receive M3 -> ?assertEqual({'DOWN', Ref, process, Sub, max_queue_size}, M3) end.
 
 
 
