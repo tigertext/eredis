@@ -17,6 +17,10 @@
           % This is the queue of messages to send to the controlling
           % process.
           msg_queue :: eredis_queue(),
+          %% queue:len(msg_queue), kept in step so the hot path is O(1).
+          msg_queue_len = 0 :: non_neg_integer(),
+          %% Highest msg_queue_len since the last gauge report.
+          peak_queue_len = 0 :: non_neg_integer(),
 
           %% When the queue reaches this size, either drop all
           %% messages or exit.
@@ -27,6 +31,10 @@
           % for the controlling process to acknowledge the last
           % message.
           msg_state = need_ack :: ready | need_ack,
+
+          %% Messages per delivery. 1 sends each message bare; above 1
+          %% sends {messages, [Msg], Pid}, one ack per batch.
+          batch_size = 1 :: pos_integer(),
 
           interval :: integer() | undefined,
           tref :: reference() | undefined

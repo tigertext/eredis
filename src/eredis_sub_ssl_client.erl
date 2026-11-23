@@ -14,11 +14,15 @@
                          {keepalive, false}, {send_timeout, ?SEND_TIMEOUT}]).
 
 %% API
--export([start_link/6, stop/1]).
+-export([start_link/6, start_link/7, stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
+
+-ifdef(TEST).
+-export([check_queue/1, queue_or_send/2]).
+-endif.
 
 %%
 %% API
@@ -32,7 +36,19 @@
                  QueueBehaviour::drop | exit) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
 start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour) ->
-    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour],
+    start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, 1).
+
+-spec start_link(Host::list(),
+                 Port::integer(),
+                 Password::string(),
+                 ReconnectSleep::reconnect_sleep(),
+                 MaxQueueSize::integer() | infinity,
+                 QueueBehaviour::drop | exit,
+                 BatchSize::pos_integer()) ->
+                        {ok, Pid::pid()} | {error, Reason::term()}.
+start_link(Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize)
+  when is_integer(BatchSize), BatchSize > 0 ->
+    Args = [Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize],
     gen_server:start_link(?MODULE, Args, []).
 
 
@@ -43,7 +59,7 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
+init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour, BatchSize]) ->
     State = #state{host            = Host,
                    port            = Port,
                    password        = list_to_binary(Password),
@@ -52,7 +68,8 @@ init([Host, Port, Password, ReconnectSleep, MaxQueueSize, QueueBehaviour]) ->
                    parser_state    = eredis_parser:init(),
                    msg_queue       = queue:new(),
                    max_queue_size  = MaxQueueSize,
-                   queue_behaviour = QueueBehaviour},
+                   queue_behaviour = QueueBehaviour,
+                   batch_size      = BatchSize},
 
     case connect(State) of
         {ok, NewState} ->
@@ -92,19 +109,22 @@ handle_cast({ack_message, Pid},
             #state{controlling_process={_, Pid}, socket = undefined} = State) ->
     {noreply, State#state{msg_state = ready}};
 
-%% Controlling process acknowledges receipt of previous message. Send
-%% the next if there is any messages queued or ask for more on the
-%% socket.
+%% Controlling process acknowledges receipt of previous delivery. Send
+%% the next batch (up to batch_size) if any messages are queued,
+%% otherwise forward the next message as soon as it arrives.
 handle_cast({ack_message, Pid},
-            #state{controlling_process={_, Pid}} = State) ->
-    NewState = case queue:out(State#state.msg_queue) of
-                   {empty, _Queue} ->
-                       State#state{msg_state = ready};
-                   {{value, Msg}, Queue} ->
-                       send_to_controller(Msg, State),
-                       State#state{msg_queue = Queue, msg_state = need_ack}
-               end,
-    {noreply, NewState};
+            #state{controlling_process={_, Pid}, msg_queue_len = 0} = State) ->
+    {noreply, State#state{msg_state = ready}};
+handle_cast({ack_message, Pid},
+            #state{controlling_process={_, Pid}, msg_queue_len = Len,
+                   batch_size = BatchSize} = State) ->
+    %% queue:split/2 raises when N exceeds the queue length.
+    N = min(BatchSize, Len),
+    {Batch, Queue} = queue:split(N, State#state.msg_queue),
+    deliver(queue:to_list(Batch), State),
+    {noreply, State#state{msg_queue = Queue,
+                          msg_queue_len = Len - N,
+                          msg_state = need_ack}};
 
 handle_cast({subscribe, Pid, Channels}, #state{controlling_process = {_, Pid}} = State) ->
     Command = eredis:create_multibulk(["SUBSCRIBE" | Channels]),
@@ -148,27 +168,7 @@ handle_cast(_Msg, State) ->
 handle_info({ssl, _Socket, Bs}, State) ->
     ok = ssl:setopts(State#state.socket, [{active, once}]),
 
-    NewState = handle_response(Bs, State),
-    case NewState#state.max_queue_size of
-        infinity ->
-            {noreply, NewState};
-        MaxQueueSize ->
-            case (MsgQueueLen = queue:len(NewState#state.msg_queue)) > MaxQueueSize of
-                true ->
-                    case State#state.queue_behaviour of
-                        drop ->
-                            Msg = {dropped, MsgQueueLen},
-                            send_to_controller(Msg, NewState),
-                            {noreply, NewState#state{msg_queue = queue:new()}};
-                        exit ->
-                            Msg = {exited, MsgQueueLen},
-                            send_to_controller(Msg, NewState),
-                            {stop, max_queue_size, State}
-                    end;
-                _ ->
-                    {noreply, NewState}
-            end
-    end;
+    check_queue(handle_response(Bs, State));
 
 handle_info({ssl_error, _Socket, _Reason}, State) ->
     %% This will be followed by a close
@@ -215,22 +215,20 @@ handle_info({'DOWN', Ref, process, Pid, _Reason},
             #state{controlling_process={Ref, Pid}} = State) ->
     {stop, shutdown, State#state{controlling_process=undefined,
                                  msg_state=ready,
-                                 msg_queue=queue:new()}};
+                                 msg_queue=queue:new(),
+                                 msg_queue_len=0}};
 
 %% eredis can be used in Poolboy, but it requires to support a simple API
 %% that Poolboy uses to manage the connections.
 handle_info(stop, State) ->
     {stop, shutdown, State};
 
-handle_info(timeout, #state{msg_queue=Msg_queue,tref=TimerRef} = State) ->
+handle_info(timeout, #state{tref = TimerRef, msg_queue_len = Len,
+                             peak_queue_len = Peak} = State) ->
     _ = timer:cancel(TimerRef),
-    Interval = 10,
-    Max_queue_size = 40000,
-    Queue_behaviour_exit = true,
-    New_queue_behaviour = case Queue_behaviour_exit of true -> exit; _ -> drop end,
-    {ok, New_TimerRef} = timer:send_after(1000 * Interval, timeout),
-    tt_prometheus:report_eredis_sub_ssl_client_state_msg_queue_len(queue:len(Msg_queue)),
-    {noreply, State#state{tref=New_TimerRef,max_queue_size=Max_queue_size,queue_behaviour=New_queue_behaviour}};
+    {ok, NewTimerRef} = timer:send_after(1000 * 10, timeout),
+    tt_prometheus:report_eredis_sub_ssl_client_state_msg_queue_len(Peak),
+    {noreply, State#state{tref = NewTimerRef, peak_queue_len = Len}};
 
 handle_info(_Info, State) ->
     {stop, {unhandled_message, _Info}, State}.
@@ -310,15 +308,38 @@ reply({ReturnCode, Value}, State) ->
     throw({unexpected_response_from_redis, ReturnCode, Value, State}).
 
 
+-spec check_queue(#state{}) -> {noreply, #state{}} | {stop, max_queue_size, #state{}}.
+%% @doc: Apply the start-time queue limit after a packet is parsed.
+check_queue(#state{max_queue_size = infinity} = State) ->
+    {noreply, State};
+check_queue(#state{msg_queue_len = Len, max_queue_size = Max} = State) when Len =< Max ->
+    {noreply, State};
+check_queue(#state{msg_queue_len = Len, queue_behaviour = drop} = State) ->
+    send_to_controller({dropped, Len}, State),
+    {noreply, State#state{msg_queue = queue:new(), msg_queue_len = 0}};
+check_queue(#state{msg_queue_len = Len, queue_behaviour = exit} = State) ->
+    send_to_controller({exited, Len}, State),
+    {stop, max_queue_size, State}.
+
 queue_or_send(Msg, State) ->
     case State#state.msg_state of
         need_ack ->
             MsgQueue = queue:in(Msg, State#state.msg_queue),
-            State#state{msg_queue = MsgQueue};
+            Len = State#state.msg_queue_len + 1,
+            State#state{msg_queue = MsgQueue,
+                        msg_queue_len = Len,
+                        peak_queue_len = max(Len, State#state.peak_queue_len)};
         ready ->
-            send_to_controller(Msg, State),
+            deliver([Msg], State),
             State#state{msg_state = need_ack}
     end.
+
+%% @doc: Send acked-protocol messages to the controller: bare when
+%% batch_size is 1 (the original protocol), wrapped otherwise.
+deliver([Msg], #state{batch_size = 1} = State) ->
+    send_to_controller(Msg, State);
+deliver(Msgs, State) ->
+    send_to_controller({messages, Msgs, self()}, State).
 
 
 %% @doc: Helper for connecting to Redis. These commands are
