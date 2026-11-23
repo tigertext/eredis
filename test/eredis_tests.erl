@@ -186,27 +186,29 @@ tcp_closed_no_reconnect_test() ->
     tcp_closed_rig(C).
 
 tcp_closed_rig(C) ->
-    %% fire async requests to add to redis client queue and then trick
-    %% the client into thinking the connection to redis has been
-    %% closed. This behavior can be observed when Redis closes an idle
-    %% connection just as a traffic burst starts.
-    DoSend = fun(tcp_closed) ->
-                     C ! {tcp_closed, fake_socket};
-                (Cmd) ->
-                     eredis:q(C, Cmd)
-             end,
-    %% attach an id to each message for later
-    Msgs = [{1, ["GET", "foo"]},
-            {2, ["GET", "bar"]},
-            {3, tcp_closed}],
-    Pids = [ remote_query(DoSend, M) || M <- Msgs ],
+    %% Queue two requests on the client, then trick it into thinking the
+    %% connection to redis has been closed. This behavior can be observed
+    %% when Redis closes an idle connection just as a traffic burst starts.
+    %% The client is suspended until both requests sit in its mailbox, so
+    %% the fake close always lands after them and before any Redis reply
+    %% (nothing reaches the socket until the client resumes).
+    ok = sys:suspend(C),
+    Pids = [ remote_query(fun(Cmd) -> eredis:q(C, Cmd) end, M)
+             || M <- [{1, ["GET", "foo"]}, {2, ["GET", "bar"]}] ],
+    ok = wait_for_queue_len(C, 2, 100),
+    C ! {tcp_closed, fake_socket},
+    ok = sys:resume(C),
     Results = gather_remote_queries(Pids),
-    %% A query that reaches the client after the close gets no_connection
-    %% instead of tcp_closed; either way it errors instead of hanging.
-    ?assertMatch({error, E} when E =:= tcp_closed; E =:= no_connection,
-                 proplists:get_value(1, Results)),
-    ?assertMatch({error, E} when E =:= tcp_closed; E =:= no_connection,
-                 proplists:get_value(2, Results)).
+    ?assertEqual({error, tcp_closed}, proplists:get_value(1, Results)),
+    ?assertEqual({error, tcp_closed}, proplists:get_value(2, Results)).
+
+wait_for_queue_len(_Pid, _Len, 0) ->
+    {error, queue_len_timeout};
+wait_for_queue_len(Pid, Len, Tries) ->
+    case process_info(Pid, message_queue_len) of
+        {message_queue_len, N} when N >= Len -> ok;
+        _ -> timer:sleep(10), wait_for_queue_len(Pid, Len, Tries - 1)
+    end.
 
 remote_query(Fun, {Id, Cmd}) ->
     Parent = self(),
